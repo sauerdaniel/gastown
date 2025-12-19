@@ -56,10 +56,8 @@ func (r *Router) Send(msg *Message) error {
 		return fmt.Errorf("sending message: %w", err)
 	}
 
-	// Optionally notify if recipient is a polecat with active session
-	if isPolecat(msg.To) && msg.Priority == PriorityHigh {
-		r.notifyPolecat(msg)
-	}
+	// Always notify recipient if they have an active session
+	r.notifyRecipient(msg)
 
 	return nil
 }
@@ -69,19 +67,14 @@ func (r *Router) GetMailbox(address string) (*Mailbox, error) {
 	return NewMailboxFromAddress(address, r.workDir), nil
 }
 
-// notifyPolecat sends a notification to a polecat's tmux session.
-func (r *Router) notifyPolecat(msg *Message) error {
-	// Parse rig/polecat from address
-	parts := strings.SplitN(msg.To, "/", 2)
-	if len(parts) != 2 {
-		return nil
+// notifyRecipient sends a notification to a recipient's tmux session.
+// Uses display-message for non-disruptive notification.
+// Supports mayor/, rig/polecat, and rig/refinery addresses.
+func (r *Router) notifyRecipient(msg *Message) error {
+	sessionID := addressToSessionID(msg.To)
+	if sessionID == "" {
+		return nil // Unable to determine session ID
 	}
-
-	rig := parts[0]
-	polecat := parts[1]
-
-	// Generate session name (matches session.Manager)
-	sessionID := fmt.Sprintf("gt-%s-%s", rig, polecat)
 
 	// Check if session exists
 	hasSession, err := r.tmux.HasSession(sessionID)
@@ -89,23 +82,29 @@ func (r *Router) notifyPolecat(msg *Message) error {
 		return nil // No active session, skip notification
 	}
 
-	// Inject notification
-	notification := fmt.Sprintf("[MAIL] %s", msg.Subject)
-	return r.tmux.SendKeys(sessionID, notification)
+	// Display notification in status line (non-disruptive)
+	notification := fmt.Sprintf("[MAIL] From %s: %s", msg.From, msg.Subject)
+	return r.tmux.DisplayMessageDefault(sessionID, notification)
 }
 
-// isPolecat checks if an address points to a polecat.
-func isPolecat(address string) bool {
-	// Not mayor, not refinery, has rig/name format
+// addressToSessionID converts a mail address to a tmux session ID.
+// Returns empty string if address format is not recognized.
+func addressToSessionID(address string) string {
+	// Mayor address: "mayor/" or "mayor"
 	if strings.HasPrefix(address, "mayor") {
-		return false
+		return "gt-mayor"
 	}
 
+	// Rig-based address: "rig/target"
 	parts := strings.SplitN(address, "/", 2)
-	if len(parts) != 2 {
-		return false
+	if len(parts) != 2 || parts[1] == "" {
+		return ""
 	}
 
+	rig := parts[0]
 	target := parts[1]
-	return target != "" && target != "refinery"
+
+	// Polecat: gt-rig-polecat
+	// Refinery: gt-rig-refinery (if refinery has its own session)
+	return fmt.Sprintf("gt-%s-%s", rig, target)
 }

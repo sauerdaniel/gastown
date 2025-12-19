@@ -200,6 +200,21 @@ type SessionInfo struct {
 	Attached  bool
 }
 
+// DisplayMessage shows a message in the tmux status line.
+// This is non-disruptive - it doesn't interrupt the session's input.
+// Duration is specified in milliseconds.
+func (t *Tmux) DisplayMessage(session, message string, durationMs int) error {
+	// Set display time temporarily, show message, then restore
+	// Use -d flag for duration in tmux 2.9+
+	_, err := t.run("display-message", "-t", session, "-d", fmt.Sprintf("%d", durationMs), message)
+	return err
+}
+
+// DisplayMessageDefault shows a message with default duration (5 seconds).
+func (t *Tmux) DisplayMessageDefault(session, message string) error {
+	return t.DisplayMessage(session, message, 5000)
+}
+
 // GetSessionInfo returns detailed information about a session.
 func (t *Tmux) GetSessionInfo(name string) (*SessionInfo, error) {
 	format := "#{session_name}|#{session_windows}|#{session_created_string}|#{session_attached}"
