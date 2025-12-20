@@ -14,6 +14,7 @@ func BuiltinMolecules() []BuiltinMolecule {
 		EngineerInBoxMolecule(),
 		QuickFixMolecule(),
 		ResearchMolecule(),
+		InstallGoBinaryMolecule(),
 	}
 }
 
@@ -94,6 +95,31 @@ Write up findings. Include:
 - Recommendations
 - Open questions
 Needs: investigate`,
+	}
+}
+
+// InstallGoBinaryMolecule returns the install-go-binary molecule definition.
+// This is a single step to rebuild and install the gt binary after code changes.
+func InstallGoBinaryMolecule() BuiltinMolecule {
+	return BuiltinMolecule{
+		ID:    "mol-install-go-binary",
+		Title: "Install Go Binary",
+		Description: `Single step to rebuild and install the gt binary after code changes.
+
+## Step: install
+Build and install the gt binary locally.
+
+Run from the rig directory:
+` + "```" + `
+go build -o gt ./cmd/gt
+go install ./cmd/gt
+` + "```" + `
+
+Verify the installed binary is updated:
+` + "```" + `
+which gt
+gt --version  # if version command exists
+` + "```",
 	}
 }
 

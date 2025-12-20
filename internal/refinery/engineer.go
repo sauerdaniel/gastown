@@ -2,11 +2,14 @@
 package refinery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -280,7 +283,7 @@ type ProcessResult struct {
 }
 
 // ProcessMR processes a single merge request.
-// This is a placeholder that will be fully implemented in gt-3x1.2.
+// It fetches the branch, checks for conflicts, and executes the merge.
 func (e *Engineer) ProcessMR(ctx context.Context, mr *beads.Issue) ProcessResult {
 	// Parse MR fields from description
 	mrFields := beads.ParseMRFields(mr)
@@ -291,18 +294,32 @@ func (e *Engineer) ProcessMR(ctx context.Context, mr *beads.Issue) ProcessResult
 		}
 	}
 
-	// For now, just log what we would do
-	// Full implementation in gt-3x1.2: Fetch and conflict check
-	fmt.Printf("[Engineer] Would process:\n")
+	if mrFields.Branch == "" {
+		return ProcessResult{
+			Success: false,
+			Error:   "branch field is required in merge request",
+		}
+	}
+
+	fmt.Printf("[Engineer] Processing MR:\n")
 	fmt.Printf("  Branch: %s\n", mrFields.Branch)
 	fmt.Printf("  Target: %s\n", mrFields.Target)
 	fmt.Printf("  Worker: %s\n", mrFields.Worker)
 
-	// Return failure for now - actual implementation in gt-3x1.2
-	return ProcessResult{
-		Success: false,
-		Error:   "ProcessMR not fully implemented (see gt-3x1.2)",
+	// Step 1: Fetch the source branch
+	fmt.Printf("[Engineer] Fetching branch origin/%s\n", mrFields.Branch)
+	if err := e.gitRun("fetch", "origin", mrFields.Branch); err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("fetch failed: %v", err),
+		}
 	}
+
+	// Step 2: Check for conflicts before attempting merge (optional pre-check)
+	// This is done implicitly during the merge step in ExecuteMerge
+
+	// Step 3: Execute the merge, test, and push
+	return e.ExecuteMerge(ctx, mr, mrFields)
 }
 
 // handleFailure handles a failed merge request.
@@ -318,4 +335,191 @@ func (e *Engineer) handleFailure(mr *beads.Issue, result ProcessResult) {
 	fmt.Printf("[Engineer] ✗ Failed: %s - %s\n", mr.ID, result.Error)
 
 	// Full failure handling (assign back to worker, labels) in gt-3x1.4
+}
+
+// ExecuteMerge performs the actual git merge, test, and push operations.
+// Steps:
+// 1. git checkout <target>
+// 2. git merge <branch> --no-ff -m 'Merge <branch>: <title>'
+// 3. If config.run_tests: run test_command, if failed: reset and return failure
+// 4. git push origin <target> (with retry logic)
+// 5. Return Success with merge_commit SHA
+func (e *Engineer) ExecuteMerge(ctx context.Context, mr *beads.Issue, mrFields *beads.MRFields) ProcessResult {
+	target := mrFields.Target
+	if target == "" {
+		target = e.config.TargetBranch
+	}
+	branch := mrFields.Branch
+
+	fmt.Printf("[Engineer] Merging %s → %s\n", branch, target)
+
+	// 1. Checkout target branch
+	if err := e.gitRun("checkout", target); err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("checkout target failed: %v", err),
+		}
+	}
+
+	// Pull latest from target to ensure we're up to date
+	if err := e.gitRun("pull", "origin", target); err != nil {
+		// Non-fatal warning - target might not exist on remote yet
+		fmt.Printf("[Engineer] Warning: pull failed (may be expected): %v\n", err)
+	}
+
+	// 2. Merge the branch
+	mergeMsg := fmt.Sprintf("Merge %s: %s", branch, mr.Title)
+	err := e.gitRun("merge", "origin/"+branch, "--no-ff", "-m", mergeMsg)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "CONFLICT") || strings.Contains(errStr, "conflict") {
+			// Abort the merge to clean up
+			_ = e.gitRun("merge", "--abort")
+			return ProcessResult{
+				Success:  false,
+				Error:    "merge conflict",
+				Conflict: true,
+			}
+		}
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("merge failed: %v", err),
+		}
+	}
+
+	// 3. Run tests if configured
+	if e.config.RunTests {
+		testCmd := e.config.TestCommand
+		if testCmd == "" {
+			testCmd = "go test ./..."
+		}
+		fmt.Printf("[Engineer] Running tests: %s\n", testCmd)
+		if err := e.runTests(testCmd); err != nil {
+			// Reset to before merge
+			fmt.Printf("[Engineer] Tests failed, resetting merge\n")
+			_ = e.gitRun("reset", "--hard", "HEAD~1")
+			return ProcessResult{
+				Success:     false,
+				Error:       fmt.Sprintf("tests failed: %v", err),
+				TestsFailed: true,
+			}
+		}
+		fmt.Printf("[Engineer] Tests passed\n")
+	}
+
+	// 4. Push with retry logic
+	if err := e.pushWithRetry(target); err != nil {
+		// Reset to before merge on push failure
+		fmt.Printf("[Engineer] Push failed, resetting merge\n")
+		_ = e.gitRun("reset", "--hard", "HEAD~1")
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("push failed: %v", err),
+		}
+	}
+
+	// 5. Get merge commit SHA
+	mergeCommit, err := e.gitOutput("rev-parse", "HEAD")
+	if err != nil {
+		mergeCommit = "unknown"
+	}
+
+	fmt.Printf("[Engineer] Merged successfully: %s\n", mergeCommit)
+	return ProcessResult{
+		Success:     true,
+		MergeCommit: mergeCommit,
+	}
+}
+
+// pushWithRetry pushes to the target branch with exponential backoff retry.
+// Uses 3 retries with 1s base delay by default.
+func (e *Engineer) pushWithRetry(targetBranch string) error {
+	const maxRetries = 3
+	baseDelay := time.Second
+
+	var lastErr error
+	delay := baseDelay
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			fmt.Printf("[Engineer] Push retry %d/%d after %v\n", attempt, maxRetries, delay)
+			time.Sleep(delay)
+			delay *= 2 // Exponential backoff
+		}
+
+		err := e.gitRun("push", "origin", targetBranch)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+
+	return fmt.Errorf("push failed after %d retries: %v", maxRetries, lastErr)
+}
+
+// runTests executes the test command.
+func (e *Engineer) runTests(testCmd string) error {
+	parts := strings.Fields(testCmd)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Dir = e.workDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		output := strings.TrimSpace(stderr.String())
+		if output == "" {
+			output = strings.TrimSpace(stdout.String())
+		}
+		if output != "" {
+			return fmt.Errorf("%v: %s", err, output)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// gitRun executes a git command in the work directory.
+func (e *Engineer) gitRun(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = e.workDir
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg != "" {
+			return fmt.Errorf("%s", errMsg)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// gitOutput executes a git command and returns stdout.
+func (e *Engineer) gitOutput(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = e.workDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg != "" {
+			return "", fmt.Errorf("%s", errMsg)
+		}
+		return "", err
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
 }

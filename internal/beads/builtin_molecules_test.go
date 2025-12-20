@@ -5,8 +5,8 @@ import "testing"
 func TestBuiltinMolecules(t *testing.T) {
 	molecules := BuiltinMolecules()
 
-	if len(molecules) != 3 {
-		t.Errorf("expected 3 built-in molecules, got %d", len(molecules))
+	if len(molecules) != 4 {
+		t.Errorf("expected 4 built-in molecules, got %d", len(molecules))
 	}
 
 	// Verify each molecule can be parsed and validated
@@ -139,5 +139,36 @@ func TestResearchMolecule(t *testing.T) {
 	// document needs investigate
 	if len(steps[1].Needs) != 1 || steps[1].Needs[0] != "investigate" {
 		t.Errorf("document should need investigate, got %v", steps[1].Needs)
+	}
+}
+
+func TestInstallGoBinaryMolecule(t *testing.T) {
+	mol := InstallGoBinaryMolecule()
+
+	if mol.ID != "mol-install-go-binary" {
+		t.Errorf("expected ID 'mol-install-go-binary', got %q", mol.ID)
+	}
+
+	if mol.Title != "Install Go Binary" {
+		t.Errorf("expected Title 'Install Go Binary', got %q", mol.Title)
+	}
+
+	steps, err := ParseMoleculeSteps(mol.Description)
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	// Should have 1 step: install
+	if len(steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(steps))
+	}
+
+	if steps[0].Ref != "install" {
+		t.Errorf("expected ref 'install', got %q", steps[0].Ref)
+	}
+
+	// install has no deps
+	if len(steps[0].Needs) != 0 {
+		t.Errorf("install should have no deps, got %v", steps[0].Needs)
 	}
 }

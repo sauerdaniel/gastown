@@ -543,8 +543,10 @@ func runMQList(cmd *cobra.Command, args []string) error {
 	b := beads.New(r.Path)
 
 	// Build list options - query for merge-request type
+	// Priority -1 means no priority filter (otherwise 0 would filter to P0 only)
 	opts := beads.ListOptions{
-		Type: "merge-request",
+		Type:     "merge-request",
+		Priority: -1,
 	}
 
 	// Apply status filter if specified
