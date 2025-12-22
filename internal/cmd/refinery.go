@@ -380,6 +380,6 @@ func runRefineryAttach(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s Refinery started\n", style.Bold.Render("✓"))
 	}
 
-	// Attach to the session
-	return t.AttachSession(sessionID)
+	// Attach to session using exec to properly forward TTY
+	return attachToTmuxSession(sessionID)
 }
