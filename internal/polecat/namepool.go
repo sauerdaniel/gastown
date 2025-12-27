@@ -156,13 +156,9 @@ func (p *NamePool) Load() error {
 		return err
 	}
 
-	// Load theme and custom names from disk (overrides constructor defaults)
-	if loaded.Theme != "" {
-		p.Theme = loaded.Theme
-	}
-	if len(loaded.CustomNames) > 0 {
-		p.CustomNames = loaded.CustomNames
-	}
+	// Note: Theme and CustomNames are NOT loaded from state file.
+	// They are configuration (from settings/config.json), not runtime state.
+	// The state file only persists InUse, OverflowNext, and MaxSize.
 
 	p.InUse = loaded.InUse
 	if p.InUse == nil {
