@@ -107,6 +107,20 @@ Examples:
 	RunE: runConvoyList,
 }
 
+var convoyAddCmd = &cobra.Command{
+	Use:   "add <convoy-id> <issue-id> [issue-id...]",
+	Short: "Add issues to an existing convoy",
+	Long: `Add issues to an existing convoy.
+
+If the convoy is closed, it will be automatically reopened.
+
+Examples:
+  gt convoy add hq-cv-abc gt-new-issue
+  gt convoy add hq-cv-abc gt-issue1 gt-issue2 gt-issue3`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: runConvoyAdd,
+}
+
 func init() {
 	// Create flags
 	convoyCreateCmd.Flags().StringVar(&convoyMolecule, "molecule", "", "Associated molecule ID")
@@ -124,6 +138,7 @@ func init() {
 	convoyCmd.AddCommand(convoyCreateCmd)
 	convoyCmd.AddCommand(convoyStatusCmd)
 	convoyCmd.AddCommand(convoyListCmd)
+	convoyCmd.AddCommand(convoyAddCmd)
 
 	rootCmd.AddCommand(convoyCmd)
 }
@@ -218,6 +233,86 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n  %s\n", style.Dim.Render("Convoy auto-closes when all tracked issues complete"))
+
+	return nil
+}
+
+func runConvoyAdd(cmd *cobra.Command, args []string) error {
+	convoyID := args[0]
+	issuesToAdd := args[1:]
+
+	townBeads, err := getTownBeadsDir()
+	if err != nil {
+		return err
+	}
+
+	// Validate convoy exists and get its status
+	showArgs := []string{"show", convoyID, "--json"}
+	showCmd := exec.Command("bd", showArgs...)
+	showCmd.Dir = townBeads
+	var stdout bytes.Buffer
+	showCmd.Stdout = &stdout
+
+	if err := showCmd.Run(); err != nil {
+		return fmt.Errorf("convoy '%s' not found", convoyID)
+	}
+
+	var convoys []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+		Type   string `json:"issue_type"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+		return fmt.Errorf("parsing convoy data: %w", err)
+	}
+
+	if len(convoys) == 0 {
+		return fmt.Errorf("convoy '%s' not found", convoyID)
+	}
+
+	convoy := convoys[0]
+
+	// Verify it's actually a convoy type
+	if convoy.Type != "convoy" {
+		return fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.Type)
+	}
+
+	// If convoy is closed, reopen it
+	reopened := false
+	if convoy.Status == "closed" {
+		reopenArgs := []string{"update", convoyID, "--status=open"}
+		reopenCmd := exec.Command("bd", reopenArgs...)
+		reopenCmd.Dir = townBeads
+		if err := reopenCmd.Run(); err != nil {
+			return fmt.Errorf("couldn't reopen convoy: %w", err)
+		}
+		reopened = true
+		fmt.Printf("%s Reopened convoy %s\n", style.Bold.Render("↺"), convoyID)
+	}
+
+	// Add 'tracks' relations for each issue
+	addedCount := 0
+	for _, issueID := range issuesToAdd {
+		depArgs := []string{"dep", "add", convoyID, issueID, "--type=tracks"}
+		depCmd := exec.Command("bd", depArgs...)
+		depCmd.Dir = townBeads
+
+		if err := depCmd.Run(); err != nil {
+			style.PrintWarning("couldn't add %s: %v", issueID, err)
+		} else {
+			addedCount++
+		}
+	}
+
+	// Output
+	if reopened {
+		fmt.Println()
+	}
+	fmt.Printf("%s Added %d issue(s) to convoy 🚚 %s\n", style.Bold.Render("✓"), addedCount, convoyID)
+	if addedCount > 0 {
+		fmt.Printf("  Issues: %s\n", strings.Join(issuesToAdd[:addedCount], ", "))
+	}
 
 	return nil
 }
