@@ -1,0 +1,19 @@
+{
+  "type": "town-settings",
+  "version": 1,
+  "default_agent": "claude-glm",
+  "agents": {
+    "claude-glm": {
+      "command": "claude",
+      "args": ["--settings", "$HOME/.claude/settings-glm.json", "--dangerously-skip-permissions"],
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "0a71f216c74549cab808a68994733902.YemVIz6of2a208A6",
+        "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.7",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.7",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
+        "API_TIMEOUT_MS": "3000000"
+      }
+    }
+  }
+}
