@@ -438,9 +438,10 @@ func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
 				return true, nil
 			}
 		}
+		// Session still running after grace periods - fall through to force kill
 	}
 
-	// Session still running, force kill
+	// Force kill the session (didn't exit gracefully, or --force was used)
 	return true, t.KillSession(sessionName)
 }
 
