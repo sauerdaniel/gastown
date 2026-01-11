@@ -445,12 +445,21 @@ func (e *Engineer) handleSuccess(mr *beads.Issue, result ProcessResult) {
 		}
 	}
 
-	// 4. Delete source branch if configured (local only - branches never go to origin)
+	// 4. Delete source branch if configured (both local and remote)
+	// After the polecat self-nuke fix, branches are pushed to origin before the
+	// worktree is deleted, so we need to clean up both local and remote copies.
 	if e.config.DeleteMergedBranches && mrFields.Branch != "" {
+		// Delete local branch
 		if err := e.git.DeleteBranch(mrFields.Branch, true); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete branch %s: %v\n", mrFields.Branch, err)
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mrFields.Branch, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mrFields.Branch)
+		}
+		// Delete remote branch from origin
+		if err := e.git.DeleteRemoteBranch("origin", mrFields.Branch); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s from origin: %v\n", mrFields.Branch, err)
+		} else {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mrFields.Branch)
 		}
 	}
 
@@ -555,12 +564,21 @@ func (e *Engineer) handleSuccessFromQueue(mr *mrqueue.MR, result ProcessResult) 
 		}
 	}
 
-	// 2. Delete source branch if configured (local only)
+	// 2. Delete source branch if configured (both local and remote)
+	// After the polecat self-nuke fix, branches are pushed to origin before the
+	// worktree is deleted, so we need to clean up both local and remote copies.
 	if e.config.DeleteMergedBranches && mr.Branch != "" {
+		// Delete local branch
 		if err := e.git.DeleteBranch(mr.Branch, true); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete branch %s: %v\n", mr.Branch, err)
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
+		}
+		// Delete remote branch from origin
+		if err := e.git.DeleteRemoteBranch("origin", mr.Branch); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s from origin: %v\n", mr.Branch, err)
+		} else {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
 		}
 	}
 
