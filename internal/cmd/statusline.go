@@ -271,7 +271,6 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 			status.opState = "OPERATIONAL"
 		}
 	}
-
 	// Track per-agent-type health (working/idle counts)
 	type sessionHealth struct {
 		icon    string
