@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -27,6 +28,14 @@ import (
 const (
 	shutdownLockFile    = "daemon/shutdown.lock"
 	shutdownLockTimeout = 5 * time.Second
+
+	// shutdownGracePeriod is how long to wait for graceful session termination.
+	// Sessions receive Ctrl-C and have this long to exit cleanly before force kill.
+	// 30 seconds gives Claude time to finish in-progress work and clean up.
+	shutdownGracePeriod = 30 * time.Second
+
+	// shutdownPollInterval is how often to check if a session has exited.
+	shutdownPollInterval = 500 * time.Millisecond
 )
 
 var downCmd = &cobra.Command{
@@ -386,7 +395,7 @@ func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
 		return false, nil // Already stopped
 	}
 
-	// Try graceful shutdown first (Ctrl-C, best-effort interrupt)
+	// Try graceful shutdown first (Ctrl-C, then wait for exit)
 	if !downForce {
 		_ = t.SendKeysRaw(sessionName, "C-c")
 
@@ -493,7 +502,66 @@ func verifyShutdown(t *tmux.Tmux, townRoot string) []string {
 		}
 	}
 
+	// Check for orphaned Claude/node processes
+	// These can be left behind if tmux sessions were killed but child processes didn't terminate
+	if pids := findOrphanedClaudeProcesses(townRoot); len(pids) > 0 {
+		respawned = append(respawned, fmt.Sprintf("orphaned Claude processes (PIDs: %v)", pids))
+	}
+
 	return respawned
+}
+
+// findOrphanedClaudeProcesses finds Claude/node processes that are running in the
+// town directory but aren't associated with any active tmux session.
+// This can happen when tmux sessions are killed but child processes don't terminate.
+func findOrphanedClaudeProcesses(townRoot string) []int {
+	// Use pgrep to find all claude/node processes
+	cmd := exec.Command("pgrep", "-l", "node")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil // pgrep found no processes or failed
+	}
+
+	var orphaned []int
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "PID command"
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		pidStr := parts[0]
+		var pid int
+		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
+			continue
+		}
+
+		// Check if this process is running in the town directory
+		if isProcessInTown(pid, townRoot) {
+			orphaned = append(orphaned, pid)
+		}
+	}
+
+	return orphaned
+}
+
+// isProcessInTown checks if a process is running in the given town directory.
+// Uses ps to check the process's working directory.
+func isProcessInTown(pid int, townRoot string) bool {
+	// Use ps to get the process's working directory
+	cmd := exec.Command("ps", "-o", "command=", "-p", fmt.Sprintf("%d", pid))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	// Check if the command line includes the town path
+	command := string(output)
+	return strings.Contains(command, townRoot)
 }
 
 // isProcessRunning checks if a process with the given PID exists.
