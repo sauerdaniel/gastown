@@ -1,1 +1,7 @@
 {"prefix":"hq-","path":"."}
+{"prefix":"mt-","path":"mt5optimizer/mayor/rig"}
+{"prefix":"ob-","path":"onlinebusiness"}
+{"prefix":"mf-","path":"mediaforge/mayor/rig"}
+{"prefix":"pf-","path":"promptforge/mayor/rig"}
+{"prefix":"oc-","path":"opencode"}
+{"prefix":"gt-","path":"gastown/mayor/rig"}
