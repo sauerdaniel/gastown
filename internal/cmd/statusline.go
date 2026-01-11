@@ -483,18 +483,13 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	}
 
 	polecatCount := 0
-	crewCount := 0
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
 			continue
 		}
-		if agent.Rig == rigName {
-			if agent.Type == AgentPolecat {
-				polecatCount++
-			} else if agent.Type == AgentCrew {
-				crewCount++
-			}
+		if agent.Rig == rigName && agent.Type == AgentPolecat {
+			polecatCount++
 		}
 	}
 
@@ -503,9 +498,6 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	// Build status
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%d 😺", polecatCount))
-	if crewCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d crew", crewCount))
-	}
 
 	// Priority 1: Check for hooked work (rig beads for witness)
 	hookedWork := ""
