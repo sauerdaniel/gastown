@@ -374,10 +374,6 @@ func startConfiguredCrew(t *tmux.Tmux, rigs []*rig.Rig, townRoot string, mu *syn
 						claudeCmd := config.BuildCrewStartupCommand(r.Name, crewName, r.Path, beacon)
 						if err := t.SendKeys(sessionID, claudeCmd); err != nil {
 							fmt.Printf("  %s %s/%s restart failed: %v\n", style.Dim.Render("○"), r.Name, crewName, err)
-						} else {
-							fmt.Printf("  %s %s/%s Claude restarted\n", style.Bold.Render("✓"), r.Name, crewName)
-							atomic.AddInt32(&startedAny, 1)
-						}
 					} else {
 						fmt.Printf("  %s %s/%s already running\n", style.Dim.Render("○"), r.Name, crewName)
 					}
