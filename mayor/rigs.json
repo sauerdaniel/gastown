@@ -1,4 +1,53 @@
 {
   "version": 1,
-  "rigs": {}
+  "rigs": {
+    "gastown": {
+      "git_url": "https://github.com/sauerdaniel/gastown.git",
+      "added_at": "2026-01-11T00:44:47.457982+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "gt"
+      }
+    },
+    "mediaforge": {
+      "git_url": "https://github.com/sauerdaniel/media-forge.git",
+      "added_at": "2026-01-10T22:39:12.024726+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "mf"
+      }
+    },
+    "mt5optimizer": {
+      "git_url": "https://github.com/sauerdaniel/MT5-portfolio-optimizer.git",
+      "added_at": "2026-01-10T22:38:27.432118+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "mt"
+      }
+    },
+    "onlinebusiness": {
+      "git_url": "https://github.com/sauerdaniel/auto-affiliate.git",
+      "added_at": "2026-01-10T22:39:07.072119+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "ob"
+      }
+    },
+    "opencode": {
+      "git_url": "https://github.com/anomalyco/opencode.git",
+      "added_at": "2026-01-11T00:43:50.302142+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "oc"
+      }
+    },
+    "promptforge": {
+      "git_url": "https://github.com/sauerdaniel/prompt-forge.git",
+      "added_at": "2026-01-10T22:39:14.356075+01:00",
+      "beads": {
+        "repo": "",
+        "prefix": "pf"
+      }
+    }
+  }
 }
