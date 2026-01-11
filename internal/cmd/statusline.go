@@ -596,9 +596,7 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	// Build status
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%d😺", polecatCount))
-	if crewCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d crew", crewCount))
-	}
+	parts = append(parts, fmt.Sprintf("%d👷", crewCount))
 
 	// Priority 1: Check for hooked work (rig beads for witness)
 	hookedWork := ""
