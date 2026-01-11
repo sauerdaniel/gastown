@@ -314,12 +314,31 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	// 🟢 = both witness and refinery running (fully active)
 	// 🟡 = one of witness/refinery running (partially active)
 	// ⚫ = neither running (inactive)
+	// ⏸️ = parked or docked (intentionally offline)
 	var rigParts []string
 	var rigNames []string
 	for rigName := range rigStatuses {
 		rigNames = append(rigNames, rigName)
 	}
-	sort.Strings(rigNames)
+
+	// Sort rigs: active rigs first (alphabetically), then parked/stopped rigs (alphabetically)
+	sort.Slice(rigNames, func(i, j int) bool {
+		// Get operational state for each rig
+		opStateI, _ := getRigOperationalState(townRoot, rigNames[i])
+		opStateJ, _ := getRigOperationalState(townRoot, rigNames[j])
+
+		// Determine if each rig is parked/stopped
+		iParked := opStateI == "PARKED" || opStateI == "DOCKED"
+		jParked := opStateJ == "PARKED" || opStateJ == "DOCKED"
+
+		// If both are same state (both parked or both active), sort alphabetically
+		if iParked == jParked {
+			return rigNames[i] < rigNames[j]
+		}
+
+		// Parked rigs go to the right (i.e., sort after active rigs)
+		return !iParked && jParked
+	})
 
 	for _, rigName := range rigNames {
 		status := rigStatuses[rigName]
