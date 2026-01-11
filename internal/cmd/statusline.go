@@ -303,8 +303,8 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		health := healthByType[agentType]
 		// Always show all agent types (no continue for total == 0)
 
-		// Show working/total format (e.g., "1/10😺" = 1 working, 10 total)
-		agentParts = append(agentParts, fmt.Sprintf("%d/%d%s", health.working, health.total, health.icon))
+		// Show icon+working/total format (e.g., "😺1/10" = 1 working, 10 total)
+		agentParts = append(agentParts, fmt.Sprintf("%s%d/%d", health.icon, health.working, health.total))
 	}
 	if len(agentParts) > 0 {
 		parts = append(parts, "active: "+strings.Join(agentParts, " "))
