@@ -67,3 +67,4 @@ sync-branch: beads-sync
 # Format: external:<project>:<capability> in bd dep commands
 external_projects:
   beads: ../../../beads/mayor/rig
+issue-prefix: "mol-"
