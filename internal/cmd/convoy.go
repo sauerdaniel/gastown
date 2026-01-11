@@ -284,6 +284,9 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 
 	createCmd := exec.Command("bd", createArgs...)
 	createCmd.Dir = townBeads
+	// Set BEADS_DIR to ensure bd uses town beads, not rig beads
+	// This fixes prefix mismatch when running from rig directories (e.g., mayor/rig)
+	createCmd.Env = append(os.Environ(), "BEADS_DIR="+townBeads)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	createCmd.Stdout = &stdout
@@ -302,6 +305,8 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 		depArgs := []string{"dep", "add", convoyID, issueID, "--type=tracks"}
 		depCmd := exec.Command("bd", depArgs...)
 		depCmd.Dir = townBeads
+		// Set BEADS_DIR to ensure bd uses town beads, not rig beads
+		depCmd.Env = append(os.Environ(), "BEADS_DIR="+townBeads)
 
 		if err := depCmd.Run(); err != nil {
 			style.PrintWarning("couldn't track %s: %v", issueID, err)
