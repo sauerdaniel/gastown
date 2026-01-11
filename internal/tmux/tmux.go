@@ -112,7 +112,7 @@ func (t *Tmux) EnsureSessionFresh(name, workDir string) error {
 
 	if exists {
 		// Session exists - check if it's a zombie
-		if !t.IsAgentRunning(name) {
+		if running, _ := t.IsAgentRunning(name); !running {
 			// Zombie session: tmux alive but Claude dead
 			// Kill it so we can create a fresh one
 			if err := t.KillSession(name); err != nil {
@@ -617,28 +617,29 @@ Run: gt mail inbox
 //
 // If expectedPaneCommands is non-empty, the pane's current command must match one of them.
 // If expectedPaneCommands is empty, any non-shell command counts as "agent running".
-func (t *Tmux) IsAgentRunning(session string, expectedPaneCommands ...string) bool {
+// Returns the pane command that was checked (for reuse by callers to avoid duplicate subprocess calls).
+func (t *Tmux) IsAgentRunning(session string, expectedPaneCommands ...string) (bool, string) {
 	cmd, err := t.GetPaneCommand(session)
 	if err != nil {
-		return false
+		return false, ""
 	}
 
 	if len(expectedPaneCommands) > 0 {
 		for _, expected := range expectedPaneCommands {
 			if expected != "" && cmd == expected {
-				return true
+				return true, cmd
 			}
 		}
-		return false
+		return false, cmd
 	}
 
 	// Fallback: any non-shell command counts as running.
 	for _, shell := range constants.SupportedShells {
 		if cmd == shell {
-			return false
+			return false, cmd
 		}
 	}
-	return cmd != ""
+	return cmd != "", cmd
 }
 
 // IsClaudeRunning checks if Claude appears to be running in the session.
@@ -646,14 +647,21 @@ func (t *Tmux) IsAgentRunning(session string, expectedPaneCommands ...string) bo
 // Claude can report as "node", "claude", or a version number like "2.0.76".
 // Also checks for child processes when the pane is a shell running claude via "bash -c".
 func (t *Tmux) IsClaudeRunning(session string) bool {
-	// Check for known command names first
-	if t.IsAgentRunning(session, "node", "claude") {
+	// Check for known command names first.
+	// IsAgentRunning returns the command it checked, avoiding a duplicate GetPaneCommand call.
+	running, cmd := t.IsAgentRunning(session, "node", "claude")
+	if running {
 		return true
 	}
 	// Check for version pattern (e.g., "2.0.76") - Claude Code shows version as pane command
-	cmd, err := t.GetPaneCommand(session)
-	if err != nil {
-		return false
+	// Reuse the command from IsAgentRunning to avoid duplicate subprocess call.
+	if cmd == "" {
+		// IsAgentRunning failed, try getting command directly
+		var err error
+		cmd, err = t.GetPaneCommand(session)
+		if err != nil {
+			return false
+		}
 	}
 	matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+`, cmd)
 	if matched {
