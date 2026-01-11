@@ -277,10 +277,10 @@ func startConfiguredCrew(t *tmux.Tmux, townRoot string) {
 		crewToStart := getCrewToStart(r)
 		for _, crewName := range crewToStart {
 			sessionID := crewSessionName(r.Name, crewName)
-			if running, _ := t.HasSession(sessionID); running {
+			if sessionExists, _ := t.HasSession(sessionID); sessionExists {
 				// Session exists - check if Claude is still running
 				agentCfg := config.ResolveAgentConfig(townRoot, r.Path)
-				if !t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...) {
+				if running, _ := t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...); !running {
 					// Claude has exited, restart it
 					fmt.Printf("  %s %s/%s session exists, restarting Claude...\n", style.Dim.Render("○"), r.Name, crewName)
 					// Build startup beacon for predecessor discovery via /resume
