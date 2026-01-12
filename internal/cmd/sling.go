@@ -356,7 +356,10 @@ func runSling(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("cooking formula %s: %w", formulaName, err)
 		}
 
-		// Step 2: Create wisp with feature and issue variables from bead
+		// Step 2: Create wisp with common variables for formula instantiation
+		// Pass both feature (bead title) and issue (bead ID) to support different formula types:
+		// - feature: for shiny-style formulas that use the issue title
+		// - issue: for mol-polecat-work-style formulas that use the issue ID
 		featureVar := fmt.Sprintf("feature=%s", info.Title)
 		issueVar := fmt.Sprintf("issue=%s", beadID)
 		wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--var", issueVar, "--json"}
