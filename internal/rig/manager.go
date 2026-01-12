@@ -994,7 +994,7 @@ func (m *Manager) createPatrolHooks(workspacePath string, runtimeConfig *config.
         "hooks": [
           {
             "type": "command",
-            "command": "gt prime && gt mail check --inject"
+            "command": "gt prime --hook && gt mail check --inject"
           }
         ]
       }
@@ -1005,7 +1005,7 @@ func (m *Manager) createPatrolHooks(workspacePath string, runtimeConfig *config.
         "hooks": [
           {
             "type": "command",
-            "command": "gt prime"
+            "command": "gt prime --hook"
           }
         ]
       }
