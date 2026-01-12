@@ -1750,3 +1750,186 @@ func TestLookupAgentConfigWithRigSettings(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveAgentNameForRole tests role-based agent name resolution.
+func TestResolveAgentNameForRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		role         string
+		townSettings *TownSettings
+		rigSettings  *RigSettings
+		expected     string
+	}{
+		{
+			name: "rig-role-agent-override",
+			role: "polecat",
+			townSettings: &TownSettings{
+				DefaultAgent: "claude",
+				RoleAgents: map[string]string{
+					"polecat": "gemini",
+				},
+			},
+			rigSettings: &RigSettings{
+				RoleAgents: map[string]string{
+					"polecat": "codex",
+				},
+			},
+			expected: "codex", // rig override wins
+		},
+		{
+			name: "town-role-agent",
+			role: "polecat",
+			townSettings: &TownSettings{
+				DefaultAgent: "claude",
+				RoleAgents: map[string]string{
+					"polecat": "gemini",
+				},
+			},
+			rigSettings: &RigSettings{
+				// No role_agents for polecat
+			},
+			expected: "gemini",
+		},
+		{
+			name: "fallback-to-rig-agent",
+			role: "polecat",
+			townSettings: &TownSettings{
+				DefaultAgent: "claude",
+				RoleAgents:   map[string]string{},
+			},
+			rigSettings: &RigSettings{
+				Agent: "cursor",
+			},
+			expected: "cursor",
+		},
+		{
+			name: "fallback-to-town-default",
+			role: "crew",
+			townSettings: &TownSettings{
+				DefaultAgent: "gemini",
+				RoleAgents:   map[string]string{},
+			},
+			rigSettings: &RigSettings{
+				// No agent set
+			},
+			expected: "gemini",
+		},
+		{
+			name: "fallback-to-claude",
+			role: "witness",
+			townSettings: &TownSettings{
+				DefaultAgent: "",
+				RoleAgents:   map[string]string{},
+			},
+			rigSettings: &RigSettings{
+				// No agent set
+			},
+			expected: "claude",
+		},
+		{
+			name: "different-roles-different-agents",
+			role: "witness",
+			townSettings: &TownSettings{
+				DefaultAgent: "claude",
+				RoleAgents: map[string]string{
+					"polecat":  "gemini",
+					"crew":     "codex",
+					"witness":  "cursor",
+					"refinery": "auggie",
+				},
+			},
+			rigSettings: &RigSettings{},
+			expected:    "cursor",
+		},
+		{
+			name: "unknown-role-fallback",
+			role: "unknown-role",
+			townSettings: &TownSettings{
+				DefaultAgent: "gemini",
+			},
+			rigSettings: &RigSettings{
+				Agent: "cursor",
+			},
+			expected: "cursor",
+		},
+		{
+			name: "mayor-role-town-level",
+			role: "mayor",
+			townSettings: &TownSettings{
+				DefaultAgent: "claude",
+				RoleAgents: map[string]string{
+					"mayor": "gemini",
+				},
+			},
+			rigSettings: nil, // town-level role
+			expected:    "gemini",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := resolveAgentNameForRole(tt.role, tt.townSettings, tt.rigSettings)
+			if result != tt.expected {
+				t.Errorf("resolveAgentNameForRole(%q) = %q, want %q", tt.role, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestBuildPolecatStartupCommandForRole tests role-based startup command building.
+func TestBuildPolecatStartupCommandForRole(t *testing.T) {
+	t.Parallel()
+
+	// Create temp directory for testing
+	tmpDir := t.TempDir()
+	townRoot := tmpDir
+	rigPath := filepath.Join(tmpDir, "testrig")
+
+	// Create town settings with role-based agents
+	townSettings := &TownSettings{
+		Type:         "town-settings",
+		Version:      CurrentTownSettingsVersion,
+		DefaultAgent: "claude",
+		RoleAgents: map[string]string{
+			"polecat": "gemini",
+		},
+		Agents: map[string]*RuntimeConfig{
+			"gemini": {
+				Command: "gemini",
+				Args:    []string{"--approval-mode", "yolo"},
+			},
+		},
+	}
+	townSettingsPath := filepath.Join(townRoot, "settings", "config.json")
+	if err := os.MkdirAll(filepath.Dir(townSettingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveTownSettings(townSettingsPath, townSettings); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create rig directory
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test that polecat startup command uses gemini
+	cmd := BuildPolecatStartupCommandForRole("testrig", "toast", rigPath, "")
+
+	// Should contain gemini command
+	if !strings.Contains(cmd, "gemini") {
+		t.Errorf("BuildPolecatStartupCommandForRole() = %q, want to contain 'gemini'", cmd)
+	}
+
+	// Should contain the environment variables
+	if !strings.Contains(cmd, "GT_ROLE=polecat") {
+		t.Errorf("BuildPolecatStartupCommandForRole() = %q, want to contain 'GT_ROLE=polecat'", cmd)
+	}
+	if !strings.Contains(cmd, "GT_RIG=testrig") {
+		t.Errorf("BuildPolecatStartupCommandForRole() = %q, want to contain 'GT_RIG=testrig'", cmd)
+	}
+	if !strings.Contains(cmd, "GT_POLECAT=toast") {
+		t.Errorf("BuildPolecatStartupCommandForRole() = %q, want to contain 'GT_POLECAT=toast'", cmd)
+	}
+}

@@ -646,19 +646,42 @@ func StopDaemon(townRoot string) error {
 		return fmt.Errorf("finding process: %w", err)
 	}
 
-	// Send SIGTERM for graceful shutdown
+	// Graceful shutdown with retry logic
+	// Try SIGTERM multiple times with exponential backoff before SIGKILL
+	maxRetries := 3
+	retryDelays := []time.Duration{
+		5 * time.Second,   // First check after 5s
+		10 * time.Second,  // Second check after 10s more
+		15 * time.Second,  // Final check after 15s more (total 30s)
+	}
+
+	// Send initial SIGTERM
 	if err := process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("sending SIGTERM: %w", err)
 	}
 
-	// Wait a bit for graceful shutdown
-	time.Sleep(constants.ShutdownNotifyDelay)
+	for i, delay := range retryDelays {
+		time.Sleep(delay)
 
-	// Check if still running
-	if err := process.Signal(syscall.Signal(0)); err == nil {
-		// Still running, force kill
-		_ = process.Signal(syscall.SIGKILL)
+		// Check if process has exited
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			// Process has terminated successfully
+			pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
+			_ = os.Remove(pidFile)
+			return nil
+		}
+
+		// Process still running, send another SIGTERM (unless last retry)
+		if i < maxRetries-1 {
+			_ = process.Signal(syscall.SIGTERM)
+		}
 	}
+
+	// Process still running after all retries, force kill with SIGKILL
+	_ = process.Signal(syscall.SIGKILL)
+
+	// Give SIGKILL a moment to take effect
+	time.Sleep(500 * time.Millisecond)
 
 	// Clean up PID file
 	pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
