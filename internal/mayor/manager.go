@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -117,7 +118,9 @@ func (m *Manager) Start(agentOverride string) error {
 	// Accept bypass permissions warning dialog if it appears.
 	_ = t.AcceptBypassPermissionsWarning(sessionID)
 
-	time.Sleep(constants.ShutdownNotifyDelay)
+	// Wait for runtime to be fully ready at the prompt (not just started)
+	runtimeConfig := config.LoadRuntimeConfig(m.townRoot)
+	runtime.SleepForReadyDelay(runtimeConfig)
 
 	// Inject startup nudge for predecessor discovery via /resume
 	_ = session.StartupNudge(t, sessionID, session.StartupNudgeConfig{
