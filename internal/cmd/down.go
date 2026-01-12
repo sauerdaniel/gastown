@@ -60,12 +60,13 @@ Use cases:
 }
 
 var (
-	downQuiet    bool
-	downForce    bool
-	downAll      bool
-	downNuke     bool
-	downDryRun   bool
-	downPolecats bool
+	downQuiet     bool
+	downForce     bool
+	downAll       bool
+	downNuke      bool
+	downDryRun    bool
+	downPolecats  bool
+	downTimeout   int  // Graceful shutdown timeout in seconds
 )
 
 func init() {
@@ -75,6 +76,7 @@ func init() {
 	downCmd.Flags().BoolVarP(&downAll, "all", "a", false, "Stop bd daemons/activity and verify shutdown")
 	downCmd.Flags().BoolVar(&downNuke, "nuke", false, "Kill entire tmux server (DESTRUCTIVE - kills non-GT sessions!)")
 	downCmd.Flags().BoolVar(&downDryRun, "dry-run", false, "Preview what would be stopped without taking action")
+	downCmd.Flags().IntVarP(&downTimeout, "timeout", "t", 0, "Graceful shutdown timeout in seconds (default: 10s per session, 0=wait indefinitely)")
 	rootCmd.AddCommand(downCmd)
 }
 
@@ -387,10 +389,49 @@ func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
 	// Try graceful shutdown first (Ctrl-C, best-effort interrupt)
 	if !downForce {
 		_ = t.SendKeysRaw(sessionName, "C-c")
-		time.Sleep(100 * time.Millisecond)
+
+		// Determine timeout strategy
+		// If timeout is 0, wait indefinitely (check up to 60s total)
+		// Otherwise, use the specified timeout
+		var gracePeriods []time.Duration
+		if downTimeout > 0 {
+			// Use user-specified timeout
+			totalWait := time.Duration(downTimeout) * time.Second
+			if totalWait <= 2*time.Second {
+				gracePeriods = []time.Duration{totalWait}
+			} else if totalWait <= 5*time.Second {
+				gracePeriods = []time.Duration{
+					totalWait / 2,
+					totalWait / 2,
+				}
+			} else {
+				// Split into 3 checks for longer timeouts
+				gracePeriods = []time.Duration{
+					totalWait / 3,
+					totalWait / 3,
+					totalWait / 3,
+				}
+			}
+		} else {
+			// Default: 10s total with exponential backoff
+			gracePeriods = []time.Duration{
+				2 * time.Second,   // First check after 2s
+				3 * time.Second,   // Second check after 3s more
+				5 * time.Second,   // Final check after 5s more (total 10s)
+			}
+		}
+
+		for _, delay := range gracePeriods {
+			time.Sleep(delay)
+			stillRunning, err := t.HasSession(sessionName)
+			if err != nil || !stillRunning {
+				// Session exited gracefully
+				return true, nil
+			}
+		}
 	}
 
-	// Kill the session
+	// Session still running, force kill
 	return true, t.KillSession(sessionName)
 }
 
