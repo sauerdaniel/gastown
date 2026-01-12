@@ -246,20 +246,11 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		idle    int
 	}
 
-	// Agent type icons
-	agentIcons := map[AgentType]string{
-		AgentPolecat:  "😺",
-		AgentWitness:  "👁️",
-		AgentRefinery: "🏭",
-		AgentDeacon:   "⛪",
-		AgentCrew:     "👷",
-	}
-
 	// Initialize health tracker for all agent types (always show all types)
 	healthByType := make(map[AgentType]*sessionHealth)
 	for _, agentType := range []AgentType{AgentPolecat, AgentWitness, AgentRefinery, AgentDeacon, AgentCrew} {
 		healthByType[agentType] = &sessionHealth{
-			icon: agentIcons[agentType],
+			icon: AgentTypeIcons[agentType],
 		}
 	}
 
