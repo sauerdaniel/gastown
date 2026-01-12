@@ -253,7 +253,38 @@ func runSling(cmd *cobra.Command, args []string) error {
 			var targetWorkDir string
 			targetAgent, targetPane, targetWorkDir, err = resolveTargetAgent(target)
 			if err != nil {
-				return fmt.Errorf("resolving target: %w", err)
+				// Check if this is a dead polecat (no active session)
+				// If so, spawn a fresh polecat instead of failing
+				if isPolecatTarget(target) && !slingNaked {
+					// Extract rig name from polecat target (format: rig/polecats/name)
+					parts := strings.Split(target, "/")
+					if len(parts) >= 3 && parts[1] == "polecats" {
+						rigName := parts[0]
+						fmt.Printf("Target polecat has no active session, spawning fresh polecat in rig '%s'...\n", rigName)
+						spawnOpts := SlingSpawnOptions{
+							Force:    slingForce,
+							Naked:    slingNaked,
+							Account:  slingAccount,
+							Create:   slingCreate,
+							HookBead: beadID,
+							Agent:    slingAgent,
+						}
+						spawnInfo, spawnErr := SpawnPolecatForSling(rigName, spawnOpts)
+						if spawnErr != nil {
+							return fmt.Errorf("spawning polecat to replace dead polecat: %w", spawnErr)
+						}
+						targetAgent = spawnInfo.AgentID()
+						targetPane = spawnInfo.Pane
+						hookWorkDir = spawnInfo.ClonePath
+
+						// Wake witness and refinery to monitor the new polecat
+						wakeRigAgents(rigName)
+					} else {
+						return fmt.Errorf("resolving target: %w", err)
+					}
+				} else {
+					return fmt.Errorf("resolving target: %w", err)
+				}
 			}
 			// Use target's working directory for bd commands (needed for redirect-based routing)
 			if targetWorkDir != "" {
@@ -1529,6 +1560,15 @@ func formatTrackBeadID(beadID string) string {
 	}
 	// Fallback for malformed IDs (single segment)
 	return beadID
+}
+
+// isPolecatTarget checks if the target string refers to a polecat.
+// Returns true if the target format is "rig/polecats/name".
+// This is used to determine if we should respawn a dead polecat
+// instead of failing when slinging work.
+func isPolecatTarget(target string) bool {
+	parts := strings.Split(target, "/")
+	return len(parts) >= 3 && parts[1] == "polecats"
 }
 
 // attachPolecatWorkMolecule attaches the mol-polecat-work molecule to a polecat's agent bead.
