@@ -173,18 +173,11 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
-	// Build startup command first
+	// Build startup command with initial prompt for propulsion.
+	// The CLI prompt is more reliable than post-startup nudges (which arrive before input is ready).
+	// Use role-based agent resolution to respect role_agents from town settings
 	townRoot := filepath.Dir(m.rig.Path)
-	var command string
-	if agentOverride != "" {
-		var err error
-		command, err = config.BuildAgentStartupCommandWithAgentOverride("refinery", m.rig.Name, townRoot, m.rig.Path, "", agentOverride)
-		if err != nil {
-			return fmt.Errorf("building startup command with agent override: %w", err)
-		}
-	} else {
-		command = config.BuildAgentStartupCommand("refinery", m.rig.Name, townRoot, m.rig.Path, "")
-	}
+	command := config.BuildRefineryStartupCommandForRole(m.rig.Name, m.rig.Path, "gt prime")
 
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
