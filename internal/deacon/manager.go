@@ -96,12 +96,7 @@ func (m *Manager) Start(agentOverride string) error {
 		}
 	} else {
 		// Otherwise use role-based agent resolution (daemon spawn)
-		envVars := config.AgentEnv(config.AgentEnvConfig{
-			Role:     "deacon",
-			TownRoot: m.townRoot,
-			BeadsDir: beads.ResolveBeadsDir(m.townRoot),
-		})
-		startupCmd = config.BuildStartupCommandForRole("deacon", envVars, "", "gt prime")
+		startupCmd = config.BuildAgentStartupCommand("deacon", "deacon", "", "gt prime")
 	}
 
 	// Create session with command directly to avoid send-keys race condition.

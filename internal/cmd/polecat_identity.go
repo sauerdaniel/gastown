@@ -221,7 +221,8 @@ func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
 	// Generate name if not provided
 	if polecatName == "" {
 		polecatGit := git.NewGit(r.Path)
-		mgr := polecat.NewManager(r, polecatGit)
+		t := tmux.NewTmux()
+		mgr := polecat.NewManager(r, polecatGit, t)
 		polecatName, err = mgr.AllocateName()
 		if err != nil {
 			return fmt.Errorf("generating polecat name: %w", err)
@@ -294,7 +295,7 @@ func runPolecatIdentityList(cmd *cobra.Command, args []string) error {
 
 		// Check if worktree exists
 		worktreeExists := false
-		mgr := polecat.NewManager(r, nil)
+		mgr := polecat.NewManager(r, nil, t)
 		if p, err := mgr.Get(name); err == nil && p != nil {
 			worktreeExists = true
 		}
@@ -396,7 +397,7 @@ func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
 	// Check worktree and session
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewSessionManager(t, r)
-	mgr := polecat.NewManager(r, nil)
+	mgr := polecat.NewManager(r, nil, t)
 
 	worktreeExists := false
 	var clonePath string
@@ -407,11 +408,7 @@ func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
 	sessionRunning, _ := polecatMgr.IsRunning(polecatName)
 
 	// Build CV summary with enhanced analytics
-	cv, err := buildCVSummary(r.Path, rigName, polecatName, beadID, clonePath)
-	if err != nil {
-		// Continue without CV if there's an error
-		cv = &CVSummary{Identity: beadID}
-	}
+	cv := buildCVSummary(r.Path, rigName, polecatName, beadID, clonePath)
 
 	// JSON output - include both identity details and CV
 	if polecatIdentityShowJSON {
@@ -707,7 +704,8 @@ func runPolecatIdentityRemove(cmd *cobra.Command, args []string) error {
 }
 
 // buildCVSummary constructs the CV summary for a polecat.
-func buildCVSummary(rigPath, rigName, polecatName, identityBeadID, clonePath string) (*CVSummary, error) {
+// Returns a partial CV on errors rather than failing - CV data is best-effort.
+func buildCVSummary(rigPath, rigName, polecatName, identityBeadID, clonePath string) *CVSummary {
 	cv := &CVSummary{
 		Identity:   identityBeadID,
 		Languages:  make(map[string]int),
@@ -787,7 +785,7 @@ func buildCVSummary(rigPath, rigName, polecatName, identityBeadID, clonePath str
 		cv.FirstPassRate = float64(cv.IssuesCompleted) / float64(total)
 	}
 
-	return cv, nil
+	return cv
 }
 
 // IssueInfo holds basic issue information for CV queries.

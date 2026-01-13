@@ -914,7 +914,8 @@ func RespawnPolecatWithHookedWork(workDir, rigName, polecatName string) error {
 
 	// Get the polecat manager
 	g := git.NewGit(rigPath)
-	mgr := polecat.NewManager(r, g)
+	t := tmux.NewTmux()
+	mgr := polecat.NewManager(r, g, t)
 
 	// Get the hook_bead from the agent bead
 	prefix := beads.GetPrefixForRig(townRoot, rigName)
@@ -949,8 +950,7 @@ func RespawnPolecatWithHookedWork(workDir, rigName, polecatName string) error {
 		}
 	}
 
-	// Start a new tmux session for the polecat
-	t := tmux.NewTmux()
+	// Start a new tmux session for the polecat (t already created above)
 	sessionMgr := polecat.NewSessionManager(t, r)
 
 	err = sessionMgr.Start(polecatName, polecat.SessionStartOptions{

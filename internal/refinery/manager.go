@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
+	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/util"
 )
@@ -102,7 +103,8 @@ func (m *Manager) Status() (*Refinery, error) {
 // Start starts the refinery.
 // If foreground is true, runs in the current process (blocking) using the Go-based polling loop.
 // Otherwise, spawns a Claude agent in a tmux session to process the merge queue.
-func (m *Manager) Start(foreground bool) error {
+// The agentOverride parameter allows specifying an agent alias to use instead of the town default.
+func (m *Manager) Start(foreground bool, agentOverride string) error {
 	ref, err := m.loadState()
 	if err != nil {
 		return err
@@ -114,10 +116,10 @@ func (m *Manager) Start(foreground bool) error {
 	if foreground {
 		// In foreground mode, check tmux session (no PID inference per ZFC)
 		townRoot := filepath.Dir(m.rig.Path)
-		agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
-		expectedCommands := config.ExpectedPaneCommands(agentCfg)
-		status := t.GetSessionStatus(sessionID, expectedCommands)
-		if status == tmux.SessionRunning {
+		agentCfg := config.ResolveRoleAgentConfig(constants.RoleRefinery, townRoot, m.rig.Path)
+		running, _ := t.HasSession(sessionID)
+		agentRunning, _ := t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...)
+		if running && agentRunning {
 			return ErrAlreadyRunning
 		}
 
@@ -135,24 +137,22 @@ func (m *Manager) Start(foreground bool) error {
 		return m.run(ref)
 	}
 
-	// Background mode: check session health in a single tmux call (faster than HasSession + IsAgentRunning)
-	// Returns: NotFound (create new), Zombie (kill and recreate), Running (skip)
-	townRoot := filepath.Dir(m.rig.Path)
-	agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
-	expectedCommands := config.ExpectedPaneCommands(agentCfg)
-	status := t.GetSessionStatus(sessionID, expectedCommands)
-	switch status {
-	case tmux.SessionRunning:
-		// Healthy - Claude is running
-		return ErrAlreadyRunning
-	case tmux.SessionZombie:
-		// Zombie - tmux alive but Claude dead. Kill and recreate.
-		_, _ = fmt.Fprintln(m.output, "⚠ Detected zombie session (tmux alive, Claude dead). Recreating...")
+	// Background mode: check if session already exists
+	running, _ := t.HasSession(sessionID)
+	if running {
+		// Session exists - check if agent is actually running (healthy vs zombie)
+		townRoot := filepath.Dir(m.rig.Path)
+		agentCfg := config.ResolveRoleAgentConfig(constants.RoleRefinery, townRoot, m.rig.Path)
+		agentRunning, _ := t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...)
+		if agentRunning {
+			// Healthy - agent is running
+			return ErrAlreadyRunning
+		}
+		// Zombie - tmux alive but agent dead. Kill and recreate.
+		_, _ = fmt.Fprintln(m.output, "⚠ Detected zombie session (tmux alive, agent dead). Recreating...")
 		if err := t.KillSession(sessionID); err != nil {
 			return fmt.Errorf("killing zombie session: %w", err)
 		}
-	case tmux.SessionNotFound:
-		// Session doesn't exist - will create new one below
 	}
 
 	// Note: No PID check per ZFC - tmux session is the source of truth
@@ -176,10 +176,18 @@ func (m *Manager) Start(foreground bool) error {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
-	// Build startup command with initial prompt for propulsion.
-	// The CLI prompt is more reliable than post-startup nudges (which arrive before input is ready).
-	// Use role-based agent resolution to respect role_agents from town settings
-	command := config.BuildRefineryStartupCommandForRole(m.rig.Name, m.rig.Path, "gt prime")
+	// Build startup command first
+	bdActor := fmt.Sprintf("%s/refinery", m.rig.Name)
+	var command string
+	if agentOverride != "" {
+		var err error
+		command, err = config.BuildAgentStartupCommandWithAgentOverride("refinery", bdActor, m.rig.Path, "", agentOverride)
+		if err != nil {
+			return fmt.Errorf("building startup command with agent override: %w", err)
+		}
+	} else {
+		command = config.BuildAgentStartupCommand("refinery", bdActor, m.rig.Path, "")
+	}
 
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
@@ -189,7 +197,7 @@ func (m *Manager) Start(foreground bool) error {
 
 	// Set environment variables (non-fatal: session works without these)
 	// Use centralized AgentEnv for consistency across all role startup paths
-	// Note: townRoot is already declared above
+	townRoot := filepath.Dir(m.rig.Path)
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:          "refinery",
 		Rig:           m.rig.Name,
@@ -233,9 +241,19 @@ func (m *Manager) Start(foreground bool) error {
 	runtime.SleepForReadyDelay(runtimeConfig)
 	_ = runtime.RunStartupFallback(t, sessionID, "refinery", runtimeConfig)
 
-	// Propulsion is handled by the CLI prompt ("gt prime") passed at startup.
-	// No need for post-startup nudges which are unreliable (text arrives before input is ready).
-	// The SessionStart hook also runs "gt prime" as a backup.
+	// Inject startup nudge for predecessor discovery via /resume
+	address := fmt.Sprintf("%s/refinery", m.rig.Name)
+	_ = session.StartupNudge(t, sessionID, session.StartupNudgeConfig{
+		Recipient: address,
+		Sender:    "deacon",
+		Topic:     "patrol",
+	}) // Non-fatal
+
+	// GUPP: Gas Town Universal Propulsion Principle
+	// Send the propulsion nudge to trigger autonomous patrol execution.
+	// Wait for beacon to be fully processed (needs to be separate prompt)
+	time.Sleep(2 * time.Second)
+	_ = t.NudgeSession(sessionID, session.PropulsionNudgeForRole("refinery", refineryRigDir)) // Non-fatal
 
 	return nil
 }
@@ -739,9 +757,16 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 		return nil, fmt.Errorf("%w: MR is already closed with reason: %s", ErrClosedImmutable, mr.CloseReason)
 	}
 
-	// Close with rejected reason
+	// Close the bead in storage with the rejection reason
+	b := beads.New(m.rig.BeadsPath())
+	if err := b.CloseWithReason("rejected: "+reason, mr.ID); err != nil {
+		return nil, fmt.Errorf("failed to close MR bead: %w", err)
+	}
+
+	// Update in-memory state for return value
 	if err := mr.Close(CloseReasonRejected); err != nil {
-		return nil, fmt.Errorf("failed to close MR: %w", err)
+		// Non-fatal: bead is already closed, just log
+		_, _ = fmt.Fprintf(m.output, "Warning: failed to update MR state: %v\n", err)
 	}
 	mr.Error = reason
 

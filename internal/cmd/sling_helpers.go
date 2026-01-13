@@ -373,3 +373,4 @@ func wakeRigAgents(rigName string) {
 	_ = t.NudgeSession(witnessSession, "Polecat dispatched - check for work")
 	_ = t.NudgeSession(refinerySession, "Polecat dispatched - check for merge requests")
 }
+

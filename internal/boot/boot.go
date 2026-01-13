@@ -41,11 +41,11 @@ type Status struct {
 
 // Boot manages the Boot watchdog lifecycle.
 type Boot struct {
-	townRoot   string
-	bootDir    string // ~/gt/deacon/dogs/boot/
-	deaconDir  string // ~/gt/deacon/
-	tmux       *tmux.Tmux
-	degraded   bool
+	townRoot  string
+	bootDir   string // ~/gt/deacon/dogs/boot/
+	deaconDir string // ~/gt/deacon/
+	tmux      *tmux.Tmux
+	degraded  bool
 }
 
 // New creates a new Boot manager.
@@ -145,7 +145,8 @@ func (b *Boot) LoadStatus() (*Status, error) {
 // Spawn starts Boot in a fresh tmux session.
 // Boot runs the mol-boot-triage molecule and exits when done.
 // In degraded mode (no tmux), it runs in a subprocess.
-func (b *Boot) Spawn() error {
+// The agentOverride parameter allows specifying an agent alias to use instead of the town default.
+func (b *Boot) Spawn(agentOverride string) error {
 	if b.IsRunning() {
 		return fmt.Errorf("boot is already running")
 	}
@@ -155,11 +156,11 @@ func (b *Boot) Spawn() error {
 		return b.spawnDegraded()
 	}
 
-	return b.spawnTmux()
+	return b.spawnTmux(agentOverride)
 }
 
 // spawnTmux spawns Boot in a tmux session.
-func (b *Boot) spawnTmux() error {
+func (b *Boot) spawnTmux(agentOverride string) error {
 	// Kill any stale session first
 	if b.IsSessionAlive() {
 		_ = b.tmux.KillSession(SessionName)
@@ -170,9 +171,18 @@ func (b *Boot) spawnTmux() error {
 		return fmt.Errorf("ensuring boot dir: %w", err)
 	}
 
-	// Build startup command first
+	// Build startup command with optional agent override
 	// The "gt boot triage" prompt tells Boot to immediately start triage (GUPP principle)
-	startCmd := config.BuildAgentStartupCommand("boot", "deacon-boot", "", "gt boot triage")
+	var startCmd string
+	if agentOverride != "" {
+		var err error
+		startCmd, err = config.BuildAgentStartupCommandWithAgentOverride("boot", "deacon-boot", "", "gt boot triage", agentOverride)
+		if err != nil {
+			return fmt.Errorf("building startup command with agent override: %w", err)
+		}
+	} else {
+		startCmd = config.BuildAgentStartupCommand("boot", "deacon-boot", "", "gt boot triage")
+	}
 
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280

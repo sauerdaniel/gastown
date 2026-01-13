@@ -145,6 +145,8 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	sessionID := m.SessionName(polecat)
 
 	// Check if session already exists
+	// Note: Orphan sessions are cleaned up by ReconcilePool during AllocateName,
+	// so by this point, any existing session should be legitimately in use.
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -172,7 +174,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// The CLI prompt is more reliable than post-startup nudges (which arrive before input is ready).
 	command := opts.Command
 	if command == "" {
-		command = config.BuildPolecatStartupCommandForRole(m.rig.Name, polecat, m.rig.Path, "")
+		command = config.BuildPolecatStartupCommand(m.rig.Name, polecat, m.rig.Path, "")
 	}
 	// Prepend runtime config dir env if needed
 	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
