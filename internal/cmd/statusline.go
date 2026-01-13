@@ -218,19 +218,7 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		rigStatuses[rigName] = &rigStatus{}
 	}
 
-	// Track per-agent-type health (working/zombie counts)
-	type agentHealth struct {
-		total   int
-		working int
-	}
-	healthByType := map[AgentType]*agentHealth{
-		AgentPolecat:  {},
-		AgentWitness:  {},
-		AgentRefinery: {},
-		AgentDeacon:   {},
-	}
-
-	// Single pass: track rig status AND agent health
+	// Track rig status in a single pass
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
@@ -249,15 +237,6 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 				rigStatuses[agent.Rig].hasRefinery = true
 			case AgentPolecat:
 				rigStatuses[agent.Rig].polecatCount++
-			}
-		}
-
-		// Track agent health (skip Mayor and Crew)
-		if health := healthByType[agent.Type]; health != nil {
-			health.total++
-			// Detect working state via ✻ symbol
-			if isSessionWorking(t, s) {
-				health.working++
 			}
 		}
 	}
@@ -354,30 +333,6 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	// 🟡 = one of witness/refinery running (partially active)
 	// ⚫ = neither running (inactive)
 	// ⏸️ = parked or docked (intentionally offline)
-	var rigParts []string
-	var rigNames []string
-	for rigName := range rigStatuses {
-		rigNames = append(rigNames, rigName)
-	}
-
-	// Sort rigs: active rigs first (alphabetically), then parked/stopped rigs (alphabetically)
-	sort.Slice(rigNames, func(i, j int) bool {
-		// Get operational state for each rig
-		opStateI, _ := getRigOperationalState(townRoot, rigNames[i])
-		opStateJ, _ := getRigOperationalState(townRoot, rigNames[j])
-
-		// Determine if each rig is parked/stopped
-		iParked := opStateI == "PARKED" || opStateI == "DOCKED"
-		jParked := opStateJ == "PARKED" || opStateJ == "DOCKED"
-
-		// If both are same state (both parked or both active), sort alphabetically
-		if iParked == jParked {
-			return rigNames[i] < rigNames[j]
-		}
-
-		// Parked rigs go to the right (i.e., sort after active rigs)
-		return !iParked && jParked
-	})
 
 	// Create sortable rig list
 	type rigInfo struct {
@@ -453,7 +408,7 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 				led = "⚫" // Operational but nothing running
 			}
 		}
-		rigParts = append(rigParts, led+abbreviateRigName(rigName))
+		rigParts = append(rigParts, led+abbreviateRigName(rig.name))
 	}
 
 	if len(rigParts) > 0 {
