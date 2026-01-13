@@ -113,8 +113,12 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	if foreground {
 		// Foreground mode is deprecated - patrol logic moved to mol-witness-patrol
 		// Just check tmux session (no PID inference per ZFC)
-		if running, _ := t.HasSession(sessionID); running && t.IsClaudeRunning(sessionID) {
-			return ErrAlreadyRunning
+		// Use IsAgentRunning with expected commands for faster startup than IsClaudeRunning
+		// (avoids expensive child process check)
+		if running, _ := t.HasSession(sessionID); running {
+			if agentRunning, _ := t.IsAgentRunning(sessionID, "node", "claude"); agentRunning {
+				return ErrAlreadyRunning
+			}
 		}
 
 		now := time.Now()
@@ -130,7 +134,9 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	running, _ := t.HasSession(sessionID)
 	if running {
 		// Session exists - check if Claude is actually running (healthy vs zombie)
-		if t.IsClaudeRunning(sessionID) {
+		// Use IsAgentRunning with expected commands for faster startup than IsClaudeRunning
+		// (avoids expensive child process check)
+		if agentRunning, _ := t.IsAgentRunning(sessionID, "node", "claude"); agentRunning {
 			// Healthy - Claude is running
 			return ErrAlreadyRunning
 		}
