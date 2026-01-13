@@ -521,10 +521,209 @@ func isPolecatTarget(target string) bool {
 	return len(parts) >= 3 && parts[1] == "polecats"
 }
 
-// attachPolecatWorkMolecule attaches the mol-polecat-work molecule to a polecat's agent bead.
-// This ensures all polecats have the standard work molecule attached for guidance.
-// The molecule is attached by storing it in the agent bead's description using attachment fields.
-//
+// storeDispatcherInBead stores the dispatcher agent ID in the bead's description.
+// This enables polecats to notify the dispatcher when work is complete.
+func storeDispatcherInBead(beadID, dispatcher string) error {
+	if dispatcher == "" {
+		return nil
+	}
+
+	// Get the bead to preserve existing description content
+	showCmd := exec.Command("bd", "show", beadID, "--json")
+	out, err := showCmd.Output()
+	if err != nil {
+		return fmt.Errorf("fetching bead: %w", err)
+	}
+
+	// Parse the bead
+	var issues []beads.Issue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return fmt.Errorf("parsing bead: %w", err)
+	}
+	if len(issues) == 0 {
+		return fmt.Errorf("bead not found")
+	}
+	issue := &issues[0]
+
+	// Get or create attachment fields
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		fields = &beads.AttachmentFields{}
+	}
+
+	// Set the dispatcher
+	fields.DispatchedBy = dispatcher
+
+	// Update the description
+	newDesc := beads.SetAttachmentFields(issue, fields)
+
+	// Update the bead
+	updateCmd := exec.Command("bd", "update", beadID, "--description="+newDesc)
+	updateCmd.Stderr = os.Stderr
+	if err := updateCmd.Run(); err != nil {
+		return fmt.Errorf("updating bead description: %w", err)
+	}
+
+	return nil
+}
+
+// injectStartPrompt sends a prompt to the target pane to start working.
+// Uses the reliable nudge pattern: literal mode + 500ms debounce + separate Enter.
+func injectStartPrompt(pane, beadID, subject, args string) error {
+	if pane == "" {
+		return fmt.Errorf("no target pane")
+	}
+
+	// Build the prompt to inject
+	var prompt string
+	if args != "" {
+		// Args provided - include them prominently in the prompt
+		if subject != "" {
+			prompt = fmt.Sprintf("Work slung: %s (%s). Args: %s. Start working now - use these args to guide your execution.", beadID, subject, args)
+		} else {
+			prompt = fmt.Sprintf("Work slung: %s. Args: %s. Start working now - use these args to guide your execution.", beadID, args)
+		}
+	} else if subject != "" {
+		prompt = fmt.Sprintf("Work slung: %s (%s). Start working on it now - no questions, just begin.", beadID, subject)
+	} else {
+		prompt = fmt.Sprintf("Work slung: %s. Start working on it now - run `gt hook` to see the hook, then begin.", beadID)
+	}
+
+	// Use the reliable nudge pattern (same as gt nudge / tmux.NudgeSession)
+	t := tmux.NewTmux()
+	return t.NudgePane(pane, prompt)
+}
+
+// getSessionFromPane extracts session name from a pane target.
+// Pane targets can be:
+// - "%9" (pane ID) - need to query tmux for session
+// - "gt-rig-name:0.0" (session:window.pane) - extract session name
+func getSessionFromPane(pane string) string {
+	if strings.HasPrefix(pane, "%") {
+		// Pane ID format - query tmux for the session
+		cmd := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{session_name}")
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// Session:window.pane format - extract session name
+	if idx := strings.Index(pane, ":"); idx > 0 {
+		return pane[:idx]
+	}
+	return pane
+}
+
+// ensureAgentReady waits for an agent to be ready before nudging an existing session.
+// Uses a pragmatic approach: wait for the pane to leave a shell, then (Claude-only)
+// accept the bypass permissions warning and give it a moment to finish initializing.
+func ensureAgentReady(sessionName string) error {
+	t := tmux.NewTmux()
+
+	// If an agent is already running, assume it's ready (session was started earlier)
+	if running, _ := t.IsAgentRunning(sessionName); running {
+		return nil
+	}
+
+	// Agent not running yet - wait for it to start (shell → program transition)
+	if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
+		return fmt.Errorf("waiting for agent to start: %w", err)
+	}
+
+	// Claude-only: accept bypass permissions warning if present
+	if t.IsClaudeRunning(sessionName) {
+		_ = t.AcceptBypassPermissionsWarning(sessionName)
+
+		// PRAGMATIC APPROACH: fixed delay rather than prompt detection.
+		// Claude startup takes ~5-8 seconds on typical machines.
+		time.Sleep(8 * time.Second)
+	} else {
+		time.Sleep(1 * time.Second)
+	}
+
+	return nil
+}
+
+// resolveTargetAgent converts a target spec to agent ID, pane, and hook root.
+// If skipPane is true, skip tmux pane lookup (for --naked mode).
+func resolveTargetAgent(target string, skipPane bool) (agentID string, pane string, hookRoot string, err error) {
+	// First resolve to session name
+	sessionName, err := resolveRoleToSession(target)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	// Convert session name to agent ID format (this doesn't require tmux)
+	agentID = sessionToAgentID(sessionName)
+
+	// Skip pane lookup if requested (--naked mode)
+	if skipPane {
+		return agentID, "", "", nil
+	}
+
+	// Get the pane for that session
+	pane, err = getSessionPane(sessionName)
+	if err != nil {
+		return "", "", "", fmt.Errorf("getting pane for %s: %w", sessionName, err)
+	}
+
+	// Get the target's working directory for hook storage
+	t := tmux.NewTmux()
+	hookRoot, err = t.GetPaneWorkDir(sessionName)
+	if err != nil {
+		return "", "", "", fmt.Errorf("getting working dir for %s: %w", sessionName, err)
+	}
+
+	return agentID, pane, hookRoot, nil
+}
+
+// sessionToAgentID converts a session name to agent ID format.
+// Uses session.ParseSessionName for consistent parsing across the codebase.
+func sessionToAgentID(sessionName string) string {
+	identity, err := session.ParseSessionName(sessionName)
+	if err != nil {
+		// Fallback for unparseable sessions
+		return sessionName
+	}
+	return identity.Address()
+}
+
+// verifyBeadExists checks that the bead exists using bd show.
+// Uses bd's native prefix-based routing via routes.jsonl - do NOT set BEADS_DIR
+// as that overrides routing and breaks resolution of rig-level beads.
+func verifyBeadExists(beadID string) error {
+	showCmd := exec.Command("bd", "show", beadID)
+	showCmd.Stderr = os.Stderr
+	if err := showCmd.Run(); err != nil {
+		return fmt.Errorf("bead '%s' not found", beadID)
+	}
+	return nil
+}
+
+// verifyFormulaExists checks that the formula exists using bd formula list.
+func verifyFormulaExists(formulaName string) error {
+	listCmd := exec.Command("bd", "formula", "list", "--quiet")
+	out, err := listCmd.Output()
+	if err != nil {
+		return fmt.Errorf("listing formulas: %w", err)
+	}
+	formulas := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, f := range formulas {
+		if f == formulaName {
+			return nil
+		}
+	}
+	return fmt.Errorf("formula '%s' not found", formulaName)
+}
+
+// looksLikeBeadID checks if the string looks like a bead ID pattern.
+// This is a routing issue workaround for beads like bd-ka761 that might not
+// be immediately verifiable but are valid bead IDs.
+func looksLikeBeadID(s string) bool {
+	return strings.HasPrefix(s, "bd-") || strings.HasPrefix(s, "gt-") || strings.HasPrefix(s, "hq-") || strings.HasPrefix(s, "gp-")
+}
+
 // Per hq-lglmw: gt sling should auto-attach mol-polecat-work when slinging to polecats.
 func attachPolecatWorkMolecule(targetAgent, hookWorkDir, townRoot string) error {
 	// Parse the polecat name from targetAgent (format: "rig/polecats/name")
