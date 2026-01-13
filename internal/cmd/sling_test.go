@@ -652,6 +652,145 @@ exit 0
 	}
 }
 
+// TestSlingPolecatCheckUsesGT_ROLE verifies that the polecat block in runSling
+// checks GT_ROLE, not just GT_POLECAT. This fixes gt-ibsa where Mayor sessions
+// with inherited GT_POLECAT were incorrectly blocked from slinging.
+func TestSlingPolecatCheckUsesGT_ROLE(t *testing.T) {
+	townRoot := t.TempDir()
+
+	// Create minimal workspace structure
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir mayor/rig: %v", err)
+	}
+
+	// Create a rig path and routes.jsonl
+	rigDir := filepath.Join(townRoot, "gastown", "mayor", "rig")
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatalf("mkdir rigDir: %v", err)
+	}
+	routes := `{"prefix":"gt-","path":"gastown/mayor/rig"}` + "\n" +
+		`{"prefix":"hq-","path":"."}` + "\n"
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", "routes.jsonl"), []byte(routes), 0644); err != nil {
+		t.Fatalf("write routes.jsonl: %v", err)
+	}
+
+	// Create stub bd
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdPath := filepath.Join(binDir, "bd")
+	bdScript := `#!/bin/sh
+if [ "$1" = "--no-daemon" ]; then
+  shift
+fi
+cmd="$1"
+case "$cmd" in
+  show)
+    echo '[{"title":"Test","status":"open","assignee":"","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(bdPath, []byte(bdScript), 0755); err != nil {
+		t.Fatalf("write bd stub: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(townRoot); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Save and restore global flags
+	prevDryRun := slingDryRun
+	prevNoConvoy := slingNoConvoy
+	t.Cleanup(func() {
+		slingDryRun = prevDryRun
+		slingNoConvoy = prevNoConvoy
+	})
+
+	slingDryRun = true
+	slingNoConvoy = true
+
+	// Prevent real tmux nudge from firing during tests
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+
+	tests := []struct {
+		name       string
+		role       string
+		polecatVar string
+		wantErr    bool
+		errMsg     string
+	}{
+		{
+			name:       "mayor with GT_POLECAT set should sling",
+			role:       "mayor",
+			polecatVar: "furiosa",
+			wantErr:    false,
+		},
+		{
+			name:       "mayor without GT_POLECAT should sling",
+			role:       "mayor",
+			polecatVar: "",
+			wantErr:    false,
+		},
+		{
+			name:       "polecat should be blocked from slinging",
+			role:       "polecat",
+			polecatVar: "aqua-cola",
+			wantErr:    true,
+			errMsg:     "polecats cannot sling",
+		},
+		{
+			name:       "witness with GT_POLECAT should sling",
+			role:       "witness",
+			polecatVar: "furiosa",
+			wantErr:    false,
+		},
+		{
+			name:       "crew with GT_POLECAT should sling",
+			role:       "crew",
+			polecatVar: "furiosa",
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvGTRole, tt.role)
+			t.Setenv("GT_POLECAT", tt.polecatVar)
+			t.Setenv("GT_CREW", "")
+
+			beadID := "gt-abc123"
+			err := runSling(nil, []string{beadID})
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("runSling() expected error containing %q, got nil", tt.errMsg)
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("runSling() expected error containing %q, got %q", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil && tt.errMsg != "" && strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("runSling() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // TestLooksLikeBeadID tests the bead ID pattern recognition function.
 // This ensures gt sling accepts bead IDs even when routing-based verification fails.
 // Fixes: gt sling bd-ka761 failing with 'not a valid bead or formula'

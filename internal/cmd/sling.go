@@ -119,8 +119,9 @@ func init() {
 }
 
 func runSling(cmd *cobra.Command, args []string) error {
-	// Polecats cannot sling - check early before writing anything
-	if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
+	// Polecats cannot sling - check GT_ROLE first, not GT_POLECAT
+	// GT_POLECAT may be inherited from parent sessions, but GT_ROLE determines actual behavior
+	if role := os.Getenv("GT_ROLE"); role == "polecat" {
 		return fmt.Errorf("polecats cannot sling (use gt done for handoff)")
 	}
 
