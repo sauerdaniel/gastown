@@ -175,8 +175,8 @@ func (m *Manager) Start(foreground bool) error {
 
 	// Build startup command with initial prompt for propulsion.
 	// The CLI prompt is more reliable than post-startup nudges (which arrive before input is ready).
-	bdActor := fmt.Sprintf("%s/refinery", m.rig.Name)
-	command := config.BuildAgentStartupCommand("refinery", bdActor, m.rig.Path, "gt prime")
+	// Use role-based agent resolution to respect role_agents from town settings
+	command := config.BuildRefineryStartupCommandForRole(m.rig.Name, m.rig.Path, "gt prime")
 
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280

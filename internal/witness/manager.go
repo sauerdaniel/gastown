@@ -274,11 +274,8 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, agentOverride string, 
 	if roleConfig != nil && roleConfig.StartCommand != "" {
 		return beads.ExpandRolePattern(roleConfig.StartCommand, townRoot, rigName, "", "witness"), nil
 	}
-	bdActor := fmt.Sprintf("%s/witness", rigName)
-	command, err := config.BuildAgentStartupCommandWithAgentOverride("witness", bdActor, rigPath, "gt prime", agentOverride)
-	if err != nil {
-		return "", fmt.Errorf("building startup command: %w", err)
-	}
+	// Use role-based agent resolution to respect role_agents from town settings
+	command := config.BuildWitnessStartupCommandForRole(rigName, rigPath, "gt prime")
 	return command, nil
 }
 
