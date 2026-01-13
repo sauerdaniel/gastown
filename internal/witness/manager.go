@@ -113,12 +113,10 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	if foreground {
 		// Foreground mode is deprecated - patrol logic moved to mol-witness-patrol
 		// Just check tmux session (no PID inference per ZFC)
-		// Use IsAgentRunning with expected commands for faster startup than IsClaudeRunning
-		// (avoids expensive child process check)
-		if running, _ := t.HasSession(sessionID); running {
-			if agentRunning, _ := t.IsAgentRunning(sessionID, "node", "claude"); agentRunning {
-				return ErrAlreadyRunning
-			}
+		// Use GetSessionStatus for faster startup (single tmux call instead of 2)
+		status := t.GetSessionStatus(sessionID, []string{"node", "claude"})
+		if status == tmux.SessionRunning {
+			return ErrAlreadyRunning
 		}
 
 		now := time.Now()
@@ -130,20 +128,20 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 		return m.saveState(w)
 	}
 
-	// Background mode: check if session already exists
-	running, _ := t.HasSession(sessionID)
-	if running {
-		// Session exists - check if Claude is actually running (healthy vs zombie)
-		// Use IsAgentRunning with expected commands for faster startup than IsClaudeRunning
-		// (avoids expensive child process check)
-		if agentRunning, _ := t.IsAgentRunning(sessionID, "node", "claude"); agentRunning {
-			// Healthy - Claude is running
-			return ErrAlreadyRunning
-		}
+	// Background mode: check session health in a single tmux call (faster than HasSession + IsAgentRunning)
+	// Returns: NotFound (create new), Zombie (kill and recreate), Running (skip)
+	status := t.GetSessionStatus(sessionID, []string{"node", "claude"})
+	switch status {
+	case tmux.SessionRunning:
+		// Healthy - Claude is running
+		return ErrAlreadyRunning
+	case tmux.SessionZombie:
 		// Zombie - tmux alive but Claude dead. Kill and recreate.
 		if err := t.KillSession(sessionID); err != nil {
 			return fmt.Errorf("killing zombie session: %w", err)
 		}
+	case tmux.SessionNotFound:
+		// Session doesn't exist - will create new one below
 	}
 
 	// Note: No PID check per ZFC - tmux session is the source of truth

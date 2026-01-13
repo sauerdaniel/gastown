@@ -393,6 +393,45 @@ func (t *Tmux) GetPaneCommand(session string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// SessionStatus represents the health status of a session.
+type SessionStatus int
+
+const (
+	SessionNotFound SessionStatus = iota // Session doesn't exist
+	SessionZombie                        // Session exists but agent not running
+	SessionRunning                       // Session exists and agent is running
+)
+
+// GetSessionStatus checks session health in a single tmux call.
+// Returns whether the session exists and if the agent is running.
+// This is more efficient than separate HasSession + IsAgentRunning calls.
+//
+// Parameters:
+//   - session: session name to check
+//   - expectedCommands: commands that indicate agent is running (e.g., "node", "claude")
+//
+// Returns:
+//   - SessionNotFound: session doesn't exist (needs creation)
+//   - SessionZombie: session exists but agent not running (needs kill + recreate)
+//   - SessionRunning: session exists and agent running (already running, skip)
+func (t *Tmux) GetSessionStatus(session string, expectedCommands []string) SessionStatus {
+	cmd, err := t.GetPaneCommand(session)
+	if err != nil {
+		// Session doesn't exist or tmux error
+		return SessionNotFound
+	}
+
+	// Session exists - check if expected command is running
+	for _, expected := range expectedCommands {
+		if cmd == expected {
+			return SessionRunning
+		}
+	}
+
+	// Session exists but running wrong command (zombie)
+	return SessionZombie
+}
+
 // GetPaneID returns the pane identifier for a session's first pane.
 // Returns a pane ID like "%0" that can be used with RespawnPane.
 func (t *Tmux) GetPaneID(session string) (string, error) {

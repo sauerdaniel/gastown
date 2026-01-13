@@ -115,10 +115,10 @@ func (m *Manager) Start(foreground bool) error {
 		// In foreground mode, check tmux session (no PID inference per ZFC)
 		townRoot := filepath.Dir(m.rig.Path)
 		agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
-		if running, _ := t.HasSession(sessionID); running {
-			if agentRunning, _ := t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...); agentRunning {
-				return ErrAlreadyRunning
-			}
+		expectedCommands := config.ExpectedPaneCommands(agentCfg)
+		status := t.GetSessionStatus(sessionID, expectedCommands)
+		if status == tmux.SessionRunning {
+			return ErrAlreadyRunning
 		}
 
 		// Running in foreground - update state and run the Go-based polling loop
@@ -135,21 +135,24 @@ func (m *Manager) Start(foreground bool) error {
 		return m.run(ref)
 	}
 
-	// Background mode: check if session already exists
-	running, _ := t.HasSession(sessionID)
-	if running {
-		// Session exists - check if Claude is actually running (healthy vs zombie)
-		townRoot := filepath.Dir(m.rig.Path)
-		agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
-		if agentRunning, _ := t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...); agentRunning {
-			// Healthy - Claude is running
-			return ErrAlreadyRunning
-		}
+	// Background mode: check session health in a single tmux call (faster than HasSession + IsAgentRunning)
+	// Returns: NotFound (create new), Zombie (kill and recreate), Running (skip)
+	townRoot := filepath.Dir(m.rig.Path)
+	agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
+	expectedCommands := config.ExpectedPaneCommands(agentCfg)
+	status := t.GetSessionStatus(sessionID, expectedCommands)
+	switch status {
+	case tmux.SessionRunning:
+		// Healthy - Claude is running
+		return ErrAlreadyRunning
+	case tmux.SessionZombie:
 		// Zombie - tmux alive but Claude dead. Kill and recreate.
 		_, _ = fmt.Fprintln(m.output, "⚠ Detected zombie session (tmux alive, Claude dead). Recreating...")
 		if err := t.KillSession(sessionID); err != nil {
 			return fmt.Errorf("killing zombie session: %w", err)
 		}
+	case tmux.SessionNotFound:
+		// Session doesn't exist - will create new one below
 	}
 
 	// Note: No PID check per ZFC - tmux session is the source of truth
@@ -186,7 +189,7 @@ func (m *Manager) Start(foreground bool) error {
 
 	// Set environment variables (non-fatal: session works without these)
 	// Use centralized AgentEnv for consistency across all role startup paths
-	townRoot := filepath.Dir(m.rig.Path)
+	// Note: townRoot is already declared above
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:          "refinery",
 		Rig:           m.rig.Name,

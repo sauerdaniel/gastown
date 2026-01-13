@@ -55,19 +55,19 @@ func (m *Manager) Start(agentOverride string) error {
 	t := tmux.NewTmux()
 	sessionID := m.SessionName()
 
-	// Check if session already exists
-	running, _ := t.HasSession(sessionID)
-	if running {
-		// Session exists - check if Claude is actually running (healthy vs zombie)
-		// Use IsAgentRunning with expected commands for faster startup than IsClaudeRunning
-		// (avoids expensive child process check)
-		if agentRunning, _ := t.IsAgentRunning(sessionID, "node", "claude"); agentRunning {
-			return ErrAlreadyRunning
-		}
+	// Check session health in a single tmux call (faster than HasSession + IsAgentRunning)
+	// Returns: NotFound (create new), Zombie (kill and recreate), Running (skip)
+	status := t.GetSessionStatus(sessionID, []string{"node", "claude"})
+	switch status {
+	case tmux.SessionRunning:
+		return ErrAlreadyRunning
+	case tmux.SessionZombie:
 		// Zombie - tmux alive but Claude dead. Kill and recreate.
 		if err := t.KillSession(sessionID); err != nil {
 			return fmt.Errorf("killing zombie session: %w", err)
 		}
+	case tmux.SessionNotFound:
+		// Session doesn't exist - will create new one below
 	}
 
 	// Ensure mayor directory exists (for Claude settings)
