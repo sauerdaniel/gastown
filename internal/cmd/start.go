@@ -645,7 +645,7 @@ func killSessionsInOrder(t *tmux.Tmux, sessions []string, mayorSession, deaconSe
 
 	// 1. Stop Deacon first
 	if inList(deaconSession) {
-		if err := t.KillSession(deaconSession); err == nil {
+		if err := t.KillSessionWithProcesses(deaconSession); err == nil {
 			fmt.Printf("  %s %s stopped\n", style.Bold.Render("✓"), deaconSession)
 			stopped++
 		}
@@ -656,7 +656,7 @@ func killSessionsInOrder(t *tmux.Tmux, sessions []string, mayorSession, deaconSe
 		if sess == deaconSession || sess == mayorSession {
 			continue
 		}
-		if err := t.KillSession(sess); err == nil {
+		if err := t.KillSessionWithProcesses(sess); err == nil {
 			fmt.Printf("  %s %s stopped\n", style.Bold.Render("✓"), sess)
 			stopped++
 		}
@@ -664,7 +664,7 @@ func killSessionsInOrder(t *tmux.Tmux, sessions []string, mayorSession, deaconSe
 
 	// 3. Stop Mayor last
 	if inList(mayorSession) {
-		if err := t.KillSession(mayorSession); err == nil {
+		if err := t.KillSessionWithProcesses(mayorSession); err == nil {
 			fmt.Printf("  %s %s stopped\n", style.Bold.Render("✓"), mayorSession)
 			stopped++
 		}

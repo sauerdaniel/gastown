@@ -9,12 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/templates"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
@@ -64,27 +62,6 @@ func New(townRoot string) *Boot {
 // EnsureDir ensures the Boot directory exists.
 func (b *Boot) EnsureDir() error {
 	return os.MkdirAll(b.bootDir, 0755)
-}
-
-// EnsureCLAUDEmd ensures Boot's CLAUDE.md exists with proper context.
-// Creates it from the boot role template if missing.
-func (b *Boot) EnsureCLAUDEmd() error {
-	claudePath := filepath.Join(b.bootDir, "CLAUDE.md")
-
-	// Check if CLAUDE.md already exists
-	if _, err := os.Stat(claudePath); err == nil {
-		// File exists, nothing to do
-		return nil
-	}
-
-	// Create CLAUDE.md from template
-	townName := filepath.Base(b.townRoot)
-	// Deacon session name is "hq-{townname}" or just "hq-deacon" for town root
-	deaconSession := "hq-deacon"
-	if townName != "" && strings.ToLower(townName) != "gt" {
-		deaconSession = fmt.Sprintf("hq-%s", strings.ToLower(townName))
-	}
-	return templates.CreateBootCLAUDEmd(b.bootDir, b.townRoot, townName, deaconSession)
 }
 
 // markerPath returns the path to the marker file.
@@ -193,13 +170,13 @@ func (b *Boot) spawnTmux() error {
 		return fmt.Errorf("ensuring boot dir: %w", err)
 	}
 
-	// Ensure CLAUDE.md exists with proper Boot context
-	if err := b.EnsureCLAUDEmd(); err != nil {
-		return fmt.Errorf("ensuring boot CLAUDE.md: %w", err)
-	}
+	// Build startup command first
+	// The "gt boot triage" prompt tells Boot to immediately start triage (GUPP principle)
+	startCmd := config.BuildAgentStartupCommand("boot", "deacon-boot", "", "gt boot triage")
 
-	// Create new session in boot directory (not deacon dir) so Claude reads Boot's CLAUDE.md
-	if err := b.tmux.NewSession(SessionName, b.bootDir); err != nil {
+	// Create session with command directly to avoid send-keys race condition.
+	// See: https://github.com/anthropics/gastown/issues/280
+	if err := b.tmux.NewSessionWithCommand(SessionName, b.bootDir, startCmd); err != nil {
 		return fmt.Errorf("creating boot session: %w", err)
 	}
 
@@ -211,18 +188,6 @@ func (b *Boot) spawnTmux() error {
 	})
 	for k, v := range envVars {
 		_ = b.tmux.SetEnvironment(SessionName, k, v)
-	}
-
-	// Launch Claude with environment exported inline and initial triage prompt
-	// The "gt boot triage" prompt tells Boot to immediately start triage (GUPP principle)
-	startCmd := config.BuildAgentStartupCommand("boot", "deacon-boot", "", "gt boot triage")
-	// Wait for shell to be ready before sending keys (prevents "can't find pane" under load)
-	if err := b.tmux.WaitForShellReady(SessionName, 5*time.Second); err != nil {
-		_ = b.tmux.KillSession(SessionName)
-		return fmt.Errorf("waiting for shell: %w", err)
-	}
-	if err := b.tmux.SendKeys(SessionName, startCmd); err != nil {
-		return fmt.Errorf("sending startup command: %w", err)
 	}
 
 	return nil
