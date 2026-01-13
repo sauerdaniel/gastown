@@ -138,6 +138,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		"--description=" + description,
 		"--type=agent",
 		"--labels=gt:agent",
+		"--force", // Agent bead IDs like gt-gastown-polecat-X don't match rig prefix patterns
 	}
 
 	// Default actor from BD_ACTOR env var for provenance tracking
