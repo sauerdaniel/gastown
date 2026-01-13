@@ -140,6 +140,9 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		"--labels=gt:agent",
 		"--force", // Agent bead IDs like gt-gastown-polecat-X don't match rig prefix patterns
 	}
+	if NeedsForceForID(id) {
+		args = append(args, "--force")
+	}
 
 	// Default actor from BD_ACTOR env var for provenance tracking
 	if actor := os.Getenv("BD_ACTOR"); actor != "" {
@@ -185,7 +188,6 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 // NOTE: This does NOT handle tombstones. If the old bead was hard-deleted (creating
 // a tombstone), this function will fail. Use CloseAndClearAgentBead instead of DeleteAgentBead
 // when cleaning up agent beads to ensure they can be reopened later.
-//
 //
 // The function:
 // 1. Tries to create the agent bead
@@ -412,7 +414,6 @@ func (b *Beads) GetAgentNotificationLevel(id string) (string, error) {
 // truly deleting. This breaks CreateOrReopenAgentBead because tombstones are
 // invisible to bd show/reopen but still block bd create via UNIQUE constraint.
 //
-//
 // WORKAROUND: Use CloseAndClearAgentBead instead, which allows CreateOrReopenAgentBead
 // to reopen the bead on re-spawn.
 func (b *Beads) DeleteAgentBead(id string) error {
@@ -447,8 +448,8 @@ func (b *Beads) CloseAndClearAgentBead(id, reason string) error {
 
 	// Parse existing fields and clear mutable ones
 	fields := ParseAgentFields(issue.Description)
-	fields.HookBead = ""     // Clear hook_bead
-	fields.ActiveMR = ""     // Clear active_mr
+	fields.HookBead = ""      // Clear hook_bead
+	fields.ActiveMR = ""      // Clear active_mr
 	fields.CleanupStatus = "" // Clear cleanup_status
 	fields.AgentState = "closed"
 

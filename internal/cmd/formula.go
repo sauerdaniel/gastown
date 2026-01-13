@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -336,6 +337,9 @@ func executeConvoyFormula(f *formulaData, formulaName, targetRig string) error {
 		"--title=" + convoyTitle,
 		"--description=" + description,
 	}
+	if beads.NeedsForceForID(convoyID) {
+		createArgs = append(createArgs, "--force")
+	}
 
 	createCmd := exec.Command("bd", createArgs...)
 	createCmd.Dir = townBeads
@@ -384,6 +388,9 @@ func executeConvoyFormula(f *formulaData, formulaName, targetRig string) error {
 			"--title=" + leg.Title,
 			"--description=" + legDesc,
 		}
+		if beads.NeedsForceForID(legBeadID) {
+			legArgs = append(legArgs, "--force")
+		}
 
 		legCmd := exec.Command("bd", legArgs...)
 		legCmd.Dir = townBeads
@@ -423,6 +430,9 @@ func executeConvoyFormula(f *formulaData, formulaName, targetRig string) error {
 			"--id=" + synthesisBeadID,
 			"--title=" + f.Synthesis.Title,
 			"--description=" + synDesc,
+		}
+		if beads.NeedsForceForID(synthesisBeadID) {
+			synArgs = append(synArgs, "--force")
 		}
 
 		synCmd := exec.Command("bd", synArgs...)
