@@ -111,6 +111,12 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 		// Update agent bead state
 		updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
 
+		// Auto-attach mol-polecat-work molecule to polecat agent bead
+		// (townRoot was already computed above for the hook command)
+		if err := attachPolecatWorkMolecule(targetAgent, hookWorkDir, townRoot); err != nil {
+			fmt.Printf("  %s Could not attach work molecule: %v\n", style.Dim.Render("Warning:"), err)
+		}
+
 		// Store args if provided
 		if slingArgs != "" {
 			if err := storeArgsInBead(beadID, slingArgs); err != nil {
