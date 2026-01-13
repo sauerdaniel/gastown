@@ -527,3 +527,194 @@ func TestHasClaudeChild(t *testing.T) {
 		t.Error("hasClaudeChild should return false for nonexistent PID")
 	}
 }
+
+// Benchmark for the OLD approach: HasSession + IsAgentRunning
+// This measures the performance of checking session health using two separate tmux calls.
+func BenchmarkSessionCheck_OldApproach(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-test-session"
+
+	// Clean up any existing test session
+	_ = tm.KillSession(testSession)
+
+	// Create a test session for benchmarking
+	_ = tm.NewSession(testSession, "")
+	defer func() { _ = tm.KillSession(testSession) }()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// OLD approach: 2 separate calls
+		exists, _ := tm.HasSession(testSession)
+		if exists {
+			_, _ = tm.IsAgentRunning(testSession, "node", "claude")
+		}
+	}
+}
+
+// Benchmark for the NEW approach: GetSessionStatus
+// This measures the performance of checking session health using a single tmux call.
+func BenchmarkSessionCheck_NewApproach(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-test-session"
+
+	// Clean up any existing test session
+	_ = tm.KillSession(testSession)
+
+	// Create a test session for benchmarking
+	_ = tm.NewSession(testSession, "")
+	defer func() { _ = tm.KillSession(testSession) }()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// NEW approach: single call
+		_ = tm.GetSessionStatus(testSession, []string{"node", "claude"})
+	}
+}
+
+// Benchmark for checking non-existent session (worst case error path)
+func BenchmarkSessionCheck_NonExistent_Old(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-nonexistent-session-xyz"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		exists, _ := tm.HasSession(testSession)
+		if exists {
+			_, _ = tm.IsAgentRunning(testSession, "node", "claude")
+		}
+	}
+}
+
+// Benchmark for checking non-existent session with new approach
+func BenchmarkSessionCheck_NonExistent_New(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-nonexistent-session-xyz"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tm.GetSessionStatus(testSession, []string{"node", "claude"})
+	}
+}
+
+// Benchmark simulating gt up with multiple agents
+// Each iteration simulates checking: mayor, deacon, 2 witnesses, 2 refineries = 7 agents
+func BenchmarkGtUpSimulation_OldApproach(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	sessions := []string{"gt-mayor", "gt-deacon", "gt-test-witness-1", "gt-test-witness-2", "gt-test-refinery-1", "gt-test-refinery-2"}
+
+	// Create test sessions
+	for _, s := range sessions {
+		_ = tm.NewSession(s, "")
+	}
+	defer func() {
+		for _, s := range sessions {
+			_ = tm.KillSession(s)
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, session := range sessions {
+			exists, _ := tm.HasSession(session)
+			if exists {
+				_, _ = tm.IsAgentRunning(session, "node", "claude")
+			}
+		}
+	}
+}
+
+// Benchmark simulating gt up with multiple agents using new approach
+func BenchmarkGtUpSimulation_NewApproach(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	sessions := []string{"gt-mayor", "gt-deacon", "gt-test-witness-1", "gt-test-witness-2", "gt-test-refinery-1", "gt-test-refinery-2"}
+
+	// Create test sessions
+	for _, s := range sessions {
+		_ = tm.NewSession(s, "")
+	}
+	defer func() {
+		for _, s := range sessions {
+			_ = tm.KillSession(s)
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, session := range sessions {
+			_ = tm.GetSessionStatus(session, []string{"node", "claude"})
+		}
+	}
+}
+
+// Benchmark measuring raw tmux subprocess overhead
+func BenchmarkTmuxSubprocess_Call(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-test-session"
+
+	// Clean up any existing test session
+	_ = tm.KillSession(testSession)
+	_ = tm.NewSession(testSession, "")
+	defer func() { _ = tm.KillSession(testSession) }()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = tm.run("list-panes", "-t", testSession, "-F", "#{pane_current_command}")
+	}
+}
+
+// Benchmark measuring the overhead of two subprocess calls vs one
+func BenchmarkTmuxSubprocess_TwoCallsVsOne(b *testing.B) {
+	if !hasTmux() {
+		b.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	testSession := "gt-bench-test-session"
+
+	// Clean up any existing test session
+	_ = tm.KillSession(testSession)
+	_ = tm.NewSession(testSession, "")
+	defer func() { _ = tm.KillSession(testSession) }()
+
+	b.Run("TwoCalls", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = tm.run("has-session", "-t", "="+testSession)
+			_, _ = tm.run("list-panes", "-t", testSession, "-F", "#{pane_current_command}")
+		}
+	})
+
+	b.Run("OneCall", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = tm.run("list-panes", "-t", testSession, "-F", "#{pane_current_command}")
+		}
+	})
+}
+
