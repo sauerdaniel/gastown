@@ -200,6 +200,10 @@ func (b *Boot) spawnTmux(agentOverride string) error {
 		_ = b.tmux.SetEnvironment(SessionName, k, v)
 	}
 
+	// Accept bypass permissions warning dialog if it appears.
+	// This prevents Boot from getting stuck at the prompt.
+	_ = b.tmux.AcceptBypassPermissionsWarning(SessionName)
+
 	return nil
 }
 

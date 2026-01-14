@@ -259,6 +259,10 @@ func (d *Daemon) getDeaconSessionName() string {
 	return session.DeaconSessionName()
 }
 
+// bootTimeout is the maximum time Boot can run before being considered stuck.
+// Boot should complete triage quickly (within a few minutes).
+const bootTimeout = 10 * time.Minute
+
 // ensureBootRunning spawns Boot to triage the Deacon.
 // Boot is a fresh-each-tick watchdog that decides whether to start/wake/nudge
 // the Deacon, centralizing the "when to wake" decision in an agent.
@@ -266,10 +270,24 @@ func (d *Daemon) getDeaconSessionName() string {
 func (d *Daemon) ensureBootRunning() {
 	b := boot.New(d.config.TownRoot)
 
-	// Check if Boot is already running (recent marker)
+	// Check if Boot is already running
 	if b.IsRunning() {
-		d.logger.Println("Boot already running, skipping spawn")
-		return
+		// Check if Boot is stuck (running for too long without completing)
+		status, err := b.LoadStatus()
+		if err == nil && status.Running && !status.StartedAt.IsZero() {
+			age := time.Since(status.StartedAt)
+			if age > bootTimeout {
+				d.logger.Printf("Boot stuck for %s, killing and respawning", age.Round(time.Minute))
+				_ = b.Tmux().KillSession(boot.SessionName)
+			} else {
+				d.logger.Println("Boot already running, skipping spawn")
+				return
+			}
+		} else {
+			// No status file or not marked running - check session age directly
+			d.logger.Println("Boot session exists but no valid status, cleaning up")
+			_ = b.Tmux().KillSession(boot.SessionName)
+		}
 	}
 
 	// Check for degraded mode
