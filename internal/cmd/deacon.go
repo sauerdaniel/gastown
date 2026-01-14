@@ -420,6 +420,8 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	_ = runtime.RunStartupFallback(t, sessionName, "deacon", runtimeConfig)
 
 	// Inject startup nudge for predecessor discovery via /resume
+	// Send AFTER gt prime so the beacon appears in session history, not prompt area
+	time.Sleep(1 * time.Second)
 	if err := session.StartupNudge(t, sessionName, session.StartupNudgeConfig{
 		Recipient: "deacon",
 		Sender:    "daemon",
