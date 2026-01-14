@@ -72,14 +72,15 @@ func runRigDock(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get rig prefix for bead ID
-	prefix := "gt" // default
+	// Rig identity beads use "hq" prefix since they're stored in town's beads database.
+	// The rig's own prefix (e.g., "df" for design_forge) is stored in the bead's fields.
+	rigPrefix := "gt" // rig's prefix for storing in fields
 	if r.Config != nil && r.Config.Prefix != "" {
-		prefix = r.Config.Prefix
+		rigPrefix = r.Config.Prefix
 	}
 
-	// Find the rig identity bead
-	rigBeadID := beads.RigBeadIDWithPrefix(prefix, rigName)
+	// Find the rig identity bead (using hq prefix for town-level storage)
+	rigBeadID := beads.RigBeadIDWithPrefix("hq", rigName)
 	bd := beads.New(r.BeadsPath())
 
 	// Check if rig bead exists, create if not
@@ -89,7 +90,7 @@ func runRigDock(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Creating rig identity bead %s...\n", rigBeadID)
 		rigBead, err = bd.CreateRigBead(rigBeadID, rigName, &beads.RigFields{
 			Repo:   r.GitURL,
-			Prefix: prefix,
+			Prefix: rigPrefix,
 			State:  "active",
 		})
 		if err != nil {
@@ -172,14 +173,8 @@ func runRigUndock(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get rig prefix for bead ID
-	prefix := "gt" // default
-	if r.Config != nil && r.Config.Prefix != "" {
-		prefix = r.Config.Prefix
-	}
-
-	// Find the rig identity bead
-	rigBeadID := beads.RigBeadIDWithPrefix(prefix, rigName)
+	// Rig identity beads use "hq" prefix since they're stored in town's beads database
+	rigBeadID := beads.RigBeadIDWithPrefix("hq", rigName)
 	bd := beads.New(r.BeadsPath())
 
 	// Check if rig bead exists, create if not
@@ -228,7 +223,10 @@ func runRigUndock(cmd *cobra.Command, args []string) error {
 
 // IsRigDocked checks if a rig is docked by checking for the status:docked label
 // on the rig identity bead. This function is exported for use by the daemon.
+// Note: prefix parameter is deprecated - rig identity beads always use "hq" prefix.
 func IsRigDocked(townRoot, rigName, prefix string) bool {
+	_ = prefix // deprecated - rig identity beads use "hq" prefix
+
 	// Construct the rig beads path
 	rigPath := townRoot + "/" + rigName
 	beadsPath := rigPath + "/mayor/rig"
@@ -237,7 +235,7 @@ func IsRigDocked(townRoot, rigName, prefix string) bool {
 	}
 
 	bd := beads.New(beadsPath)
-	rigBeadID := beads.RigBeadIDWithPrefix(prefix, rigName)
+	rigBeadID := beads.RigBeadIDWithPrefix("hq", rigName)
 
 	rigBead, err := bd.Show(rigBeadID)
 	if err != nil {
