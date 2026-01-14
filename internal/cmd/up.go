@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/mayor"
+	"github.com/steveyegge/gastown/internal/parallel"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -281,14 +282,8 @@ func ensureDaemon(townRoot string) error {
 	return nil
 }
 
-// rigPrefetchResult holds the result of loading a single rig config.
-type rigPrefetchResult struct {
-	index int
-	rig   *rig.Rig
-	err   error
-}
-
 // prefetchRigs loads all rig configs in parallel for faster agent startup.
+// Uses the parallel.Prefetch API for concurrent execution.
 // Returns a map of rig name to loaded Rig, and any errors encountered.
 func prefetchRigs(rigNames []string) (map[string]*rig.Rig, map[string]error) {
 	n := len(rigNames)
@@ -296,45 +291,18 @@ func prefetchRigs(rigNames []string) (map[string]*rig.Rig, map[string]error) {
 		return make(map[string]*rig.Rig), make(map[string]error)
 	}
 
-	// Use channel to collect results without locking
-	results := make(chan rigPrefetchResult, n)
-
+	// Create fetch functions for each rig
+	fetchFuncs := make([]func() (string, *rig.Rig, error), n)
 	for i, name := range rigNames {
-		go func(idx int, rigName string) {
+		rigName := name
+		fetchFuncs[i] = func() (string, *rig.Rig, error) {
 			_, r, err := getRig(rigName)
-			results <- rigPrefetchResult{index: idx, rig: r, err: err}
-		}(i, name)
-	}
-
-	// Collect results - pre-allocate maps with capacity
-	rigs := make(map[string]*rig.Rig, n)
-	errors := make(map[string]error)
-
-	for i := 0; i < n; i++ {
-		res := <-results
-		name := rigNames[res.index]
-		if res.err != nil {
-			errors[name] = res.err
-		} else {
-			rigs[name] = res.rig
+			return rigName, r, err
 		}
 	}
 
-	return rigs, errors
-}
-
-// agentTask represents a unit of work for the agent worker pool.
-type agentTask struct {
-	rigName   string
-	rigObj    *rig.Rig
-	isWitness bool // true for witness, false for refinery
-}
-
-// agentResultMsg carries result back from worker to collector.
-type agentResultMsg struct {
-	rigName   string
-	isWitness bool
-	result    agentStartResult
+	// Use parallel.Prefetch for concurrent loading
+	return parallel.Prefetch(fetchFuncs...)
 }
 
 // startRigAgentsParallel starts all Witnesses and Refineries concurrently.
@@ -345,7 +313,7 @@ func startRigAgentsParallel(rigNames []string) (witnessResults, refineryResults 
 }
 
 // startRigAgentsWithPrefetch starts all Witnesses and Refineries using pre-loaded rig configs.
-// Uses a worker pool with fixed goroutine count to limit concurrency and reduce overhead.
+// Uses the parallel.WorkerPool API for bounded concurrency and reduced overhead.
 func startRigAgentsWithPrefetch(rigNames []string, prefetchedRigs map[string]*rig.Rig, rigErrors map[string]error) (witnessResults, refineryResults map[string]agentStartResult) {
 	n := len(rigNames)
 	witnessResults = make(map[string]agentStartResult, n)
@@ -370,62 +338,32 @@ func startRigAgentsWithPrefetch(rigNames []string, prefetchedRigs map[string]*ri
 		}
 	}
 
-	numTasks := len(prefetchedRigs) * 2 // witness + refinery per rig
-	if numTasks == 0 {
-		return
-	}
-
-	// Task channel and result channel
-	tasks := make(chan agentTask, numTasks)
-	results := make(chan agentResultMsg, numTasks)
-
-	// Start fixed worker pool (bounded by maxConcurrentAgentStarts)
-	numWorkers := maxConcurrentAgentStarts
-	if numTasks < numWorkers {
-		numWorkers = numTasks
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for task := range tasks {
-				var result agentStartResult
-				if task.isWitness {
-					result = upStartWitness(task.rigName, task.rigObj)
-				} else {
-					result = upStartRefinery(task.rigName, task.rigObj)
-				}
-				results <- agentResultMsg{
-					rigName:   task.rigName,
-					isWitness: task.isWitness,
-					result:    result,
-				}
-			}
-		}()
-	}
-
-	// Enqueue all tasks
+	// Create agent start tasks
+	var agentTasks []func() agentStartResult
 	for rigName, r := range prefetchedRigs {
-		tasks <- agentTask{rigName: rigName, rigObj: r, isWitness: true}
-		tasks <- agentTask{rigName: rigName, rigObj: r, isWitness: false}
+		// Capture loop variables for goroutines
+		rigNameCopy := rigName
+		rCopy := r
+		agentTasks = append(agentTasks, func() agentStartResult {
+			return upStartWitness(rigNameCopy, rCopy)
+		})
+		agentTasks = append(agentTasks, func() agentStartResult {
+			return upStartRefinery(rigNameCopy, rCopy)
+		})
 	}
-	close(tasks)
 
-	// Close results channel when workers are done
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	// Use parallel.WorkerPool for bounded concurrency
+	pool := parallel.NewWorkerPool[agentStartResult](maxConcurrentAgentStarts)
+	results := pool.Execute(agentTasks...)
 
-	// Collect results - no locking needed, single goroutine collects
-	for msg := range results {
-		if msg.isWitness {
-			witnessResults[msg.rigName] = msg.result
-		} else {
-			refineryResults[msg.rigName] = msg.result
-		}
+	// Distribute results to witness and refinery maps
+	taskIdx := 0
+	for rigName := range prefetchedRigs {
+		// Each rig has two tasks: witness, then refinery
+		witnessResults[rigName] = results[taskIdx]
+		taskIdx++
+		refineryResults[rigName] = results[taskIdx]
+		taskIdx++
 	}
 
 	return
