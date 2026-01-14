@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
@@ -85,18 +84,9 @@ func (m *Manager) Start(agentOverride string) error {
 	// Build startup command with initial prompt for propulsion.
 	// The CLI prompt is more reliable than post-startup nudges (which arrive before input is ready).
 	// Restarts are handled by daemon via ensureDeaconRunning on each heartbeat
-	// Use role-based agent resolution to respect role_agents from town settings
-	var startupCmd string
-	if agentOverride != "" {
-		// If override is specified, use it (manual start with --agent flag)
-		var err error
-		startupCmd, err = config.BuildAgentStartupCommandWithAgentOverride("deacon", "deacon", "", "gt prime", agentOverride)
-		if err != nil {
-			return fmt.Errorf("building startup command: %w", err)
-		}
-	} else {
-		// Otherwise use role-based agent resolution (daemon spawn)
-		startupCmd = config.BuildAgentStartupCommand("deacon", "deacon", "", "gt prime")
+	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("deacon", "", m.townRoot, "", "", agentOverride)
+	if err != nil {
+		return fmt.Errorf("building startup command: %w", err)
 	}
 
 	// Create session with command directly to avoid send-keys race condition.
@@ -110,7 +100,6 @@ func (m *Manager) Start(agentOverride string) error {
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:     "deacon",
 		TownRoot: m.townRoot,
-		BeadsDir: beads.ResolveBeadsDir(m.townRoot),
 	})
 	for k, v := range envVars {
 		_ = t.SetEnvironment(sessionID, k, v)

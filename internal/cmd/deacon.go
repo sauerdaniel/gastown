@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -348,12 +349,12 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 
 	// Ensure Claude settings exist (autonomous role needs mail in SessionStart)
 	if err := claude.EnsureSettingsForRole(deaconDir, "deacon"); err != nil {
-		style.PrintWarning("Could not create deacon settings: %v", err)
+		return fmt.Errorf("creating deacon settings: %w", err)
 	}
 
 	// Build startup command first
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("deacon", "deacon", "", "", agentOverride)
+	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("deacon", "", townRoot, "", "", agentOverride)
 	if err != nil {
 		return fmt.Errorf("building startup command: %w", err)
 	}
@@ -370,7 +371,6 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:     "deacon",
 		TownRoot: townRoot,
-		BeadsDir: beads.ResolveBeadsDir(townRoot),
 	})
 	for k, v := range envVars {
 		_ = t.SetEnvironment(sessionName, k, v)
@@ -381,9 +381,9 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	theme := tmux.DeaconTheme()
 	_ = t.ConfigureGasTownSession(sessionName, theme, "", "Deacon", "health-check")
 
-	// Wait for Claude to start (non-fatal)
+	// Wait for Claude to start
 	if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-		// Non-fatal
+		return fmt.Errorf("waiting for deacon to start: %w", err)
 	}
 	time.Sleep(constants.ShutdownNotifyDelay)
 
@@ -398,13 +398,21 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	_ = t.SendKeys(sessionName, "gt prime") // Non-fatal
 
 	// Inject startup nudge for predecessor discovery via /resume
-	// Send AFTER gt prime so the beacon appears in session history, not prompt area
-	time.Sleep(1 * time.Second)
-	_ = session.StartupNudge(t, sessionName, session.StartupNudgeConfig{
+	if err := session.StartupNudge(t, sessionName, session.StartupNudgeConfig{
 		Recipient: "deacon",
 		Sender:    "daemon",
 		Topic:     "patrol",
-	}) // Non-fatal
+	}); err != nil {
+		style.PrintWarning("failed to send startup nudge: %v", err)
+	}
+
+	// GUPP: Gas Town Universal Propulsion Principle
+	// Send the propulsion nudge to trigger autonomous patrol execution.
+	// Wait for beacon to be fully processed (needs to be separate prompt)
+	time.Sleep(2 * time.Second)
+	if err := t.NudgeSession(sessionName, session.PropulsionNudgeForRole("deacon", deaconDir)); err != nil {
+		return fmt.Errorf("sending propulsion nudge: %w", err)
+	}
 
 	return nil
 }
@@ -702,25 +710,35 @@ func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%s Sent HEALTH_CHECK to %s, waiting %s...\n",
 		style.Bold.Render("→"), agent, healthCheckTimeout)
 
-	// Wait for response
-	deadline := time.Now().Add(healthCheckTimeout)
+	// Wait for response using context and ticker for reliability
+	// This prevents loop hangs if system clock changes
+	ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
 	responded := false
 
-	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second) // Check every 2 seconds
+	for {
+		select {
+		case <-ctx.Done():
+			goto Done
+		case <-ticker.C:
+			newTime, err := getAgentBeadUpdateTime(townRoot, beadID)
+			if err != nil {
+				continue
+			}
 
-		newTime, err := getAgentBeadUpdateTime(townRoot, beadID)
-		if err != nil {
-			continue
-		}
-
-		// If bead was updated after our baseline, agent responded
-		if newTime.After(baselineTime) {
-			responded = true
-			break
+			// If bead was updated after our baseline, agent responded
+			if newTime.After(baselineTime) {
+				responded = true
+				goto Done
+			}
 		}
 	}
 
+Done:
 	// Record result
 	if responded {
 		agentState.RecordResponse()

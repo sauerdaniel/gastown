@@ -265,6 +265,7 @@ exit 0
 	t.Setenv(EnvGTRole, "mayor")
 	t.Setenv("GT_POLECAT", "")
 	t.Setenv("GT_CREW", "")
+	t.Setenv("TMUX_PANE", "") // Prevent inheriting real tmux pane from test runner
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -426,6 +427,7 @@ exit 0
 	t.Setenv(EnvGTRole, "mayor")
 	t.Setenv("GT_POLECAT", "")
 	t.Setenv("GT_CREW", "")
+	t.Setenv("TMUX_PANE", "") // Prevent inheriting real tmux pane from test runner
 
 	cwd, err := os.Getwd()
 	if err != nil {
