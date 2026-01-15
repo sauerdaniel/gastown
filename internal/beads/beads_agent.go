@@ -139,6 +139,12 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		args = append(args, "--force")
 	}
 
+	// Add --force for multi-hyphen IDs (e.g., "test-testrig-polecat-xyz")
+	// Newer bd versions infer prefix from last hyphen, breaking system IDs
+	if NeedsForceForID(id) {
+		args = append(args, "--force")
+	}
+
 	// Default actor from BD_ACTOR env var for provenance tracking
 	// Uses getActor() to respect isolated mode (tests)
 	if actor := b.getActor(); actor != "" {
