@@ -16,6 +16,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/deps"
 	"github.com/steveyegge/gastown/internal/formula"
+	"github.com/steveyegge/gastown/internal/service"
 	"github.com/steveyegge/gastown/internal/shell"
 	"github.com/steveyegge/gastown/internal/state"
 	"github.com/steveyegge/gastown/internal/style"
@@ -35,6 +36,7 @@ var (
 	installPublic     bool
 	installShell      bool
 	installWrappers   bool
+	installService    bool
 )
 
 var installCmd = &cobra.Command{
@@ -77,6 +79,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installPublic, "public", false, "Make GitHub repo public (use with --github)")
 	installCmd.Flags().BoolVar(&installShell, "shell", false, "Install shell integration (sets GT_TOWN_ROOT/GT_RIG env vars)")
 	installCmd.Flags().BoolVar(&installWrappers, "wrappers", false, "Install gt-codex/gt-opencode wrapper scripts to ~/bin/")
+	installCmd.Flags().BoolVar(&installService, "service", false, "Install system service file (launchd/systemd) for daemon supervision")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -304,6 +307,37 @@ func runInstall(cmd *cobra.Command, args []string) error {
 			fmt.Printf("   %s Could not install wrapper scripts: %v\n", style.Dim.Render("⚠"), err)
 		} else {
 			fmt.Printf("   ✓ Installed gt-codex and gt-opencode to %s\n", wrappers.BinDir())
+		}
+	}
+
+	if installService {
+		fmt.Println()
+		// Get the gt executable path
+		gtPath, err := os.Executable()
+		if err != nil {
+			fmt.Printf("   %s Could not get gt executable path: %v\n", style.Dim.Render("⚠"), err)
+		} else {
+			// Install service file
+			serviceCfg := service.Config{
+				GTPath:   gtPath,
+				TownRoot: absPath,
+				TownName: townName,
+			}
+			if err := service.Install(serviceCfg); err != nil {
+				fmt.Printf("   %s Could not install service file: %v\n", style.Dim.Render("⚠"), err)
+			} else {
+				fmt.Printf("   ✓ Installed service file for daemon supervision\n")
+
+				// Show how to start the service
+				startCmd, _ := service.StartCommand()
+				fmt.Printf("\n   To start the daemon service:\n")
+				fmt.Printf("     %s\n", style.Dim.Render(startCmd))
+
+				// Show how to check status
+				statusCmd, _ := service.StatusCommand()
+				fmt.Printf("\n   To check service status:\n")
+				fmt.Printf("     %s\n", style.Dim.Render(statusCmd))
+			}
 		}
 	}
 

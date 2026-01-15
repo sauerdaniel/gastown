@@ -1,0 +1,24 @@
+[Unit]
+Description=Gas Town Daemon for %s
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%s daemon start --foreground
+WorkingDirectory=%s
+Restart=always
+RestartSec=10s
+
+# Logging
+StandardOutput=append:%s/daemon/daemon.out.log
+StandardError=append:%s/daemon/daemon.err.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Environment
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
