@@ -66,8 +66,9 @@ var daemonRunCmd = &cobra.Command{
 }
 
 var (
-	daemonLogLines int
-	daemonLogFollow bool
+	daemonLogLines    int
+	daemonLogFollow   bool
+	daemonForeground  bool
 )
 
 func init() {
@@ -80,6 +81,8 @@ func init() {
 	daemonLogsCmd.Flags().IntVarP(&daemonLogLines, "lines", "n", 50, "Number of lines to show")
 	daemonLogsCmd.Flags().BoolVarP(&daemonLogFollow, "follow", "f", false, "Follow log output")
 
+	daemonStartCmd.Flags().BoolVar(&daemonForeground, "foreground", false, "Run in foreground (for service supervisors)")
+
 	rootCmd.AddCommand(daemonCmd)
 }
 
@@ -89,6 +92,28 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
+	// Foreground mode: run daemon directly in current process
+	// This is for use with service supervisors (launchd, systemd, etc.)
+	if daemonForeground {
+		// Check if already running
+		running, pid, err := daemon.IsRunning(townRoot)
+		if err != nil {
+			return fmt.Errorf("checking daemon status: %w", err)
+		}
+		if running {
+			return fmt.Errorf("daemon already running (PID %d)", pid)
+		}
+
+		// Run daemon in foreground (current process)
+		config := daemon.DefaultConfig(townRoot)
+		d, err := daemon.New(config)
+		if err != nil {
+			return fmt.Errorf("creating daemon: %w", err)
+		}
+		return d.Run()
+	}
+
+	// Background mode (default): spawn daemon as background process
 	// Check if already running
 	running, pid, err := daemon.IsRunning(townRoot)
 	if err != nil {
