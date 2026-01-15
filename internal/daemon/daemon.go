@@ -28,6 +28,7 @@ import (
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/shutdown"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/wisp"
 	"github.com/steveyegge/gastown/internal/witness"
@@ -657,12 +658,10 @@ func (d *Daemon) Stop() {
 }
 
 // isShutdownInProgress checks if a shutdown is currently in progress.
-// The shutdown.lock file is created by gt down before terminating sessions.
+// Uses the shutdown coordinator to check for the shutdown signal file.
 // This prevents the daemon from fighting shutdown by auto-restarting killed agents.
 func (d *Daemon) isShutdownInProgress() bool {
-	lockPath := filepath.Join(d.config.TownRoot, "daemon", "shutdown.lock")
-	_, err := os.Stat(lockPath)
-	return err == nil
+	return shutdown.InProgress(d.config.TownRoot)
 }
 
 // IsRunning checks if a daemon is running for the given town.

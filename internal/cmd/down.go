@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
@@ -19,14 +17,16 @@ import (
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/shutdown"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 const (
-	shutdownLockFile    = "daemon/shutdown.lock"
-	shutdownLockTimeout = 5 * time.Second
+	// shutdownGracePeriod is how long agents get to shut down gracefully.
+	// This can be overridden via GT_SHUTDOWN_GRACE_PERIOD env var.
+	shutdownGracePeriod = 30 * time.Second
 )
 
 var downCmd = &cobra.Command{
@@ -89,19 +89,35 @@ func runDown(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("tmux not available (is tmux installed and on PATH?)")
 	}
 
-	// Phase 0: Acquire shutdown lock (skip for dry-run)
-	if !downDryRun {
-		lock, err := acquireShutdownLock(townRoot)
-		if err != nil {
-			return fmt.Errorf("cannot proceed: %w", err)
-		}
-		defer func() { _ = lock.Unlock() }()
-	}
 	allOK := true
 
 	if downDryRun {
 		fmt.Println("═══ DRY RUN: Preview of shutdown actions ═══")
 		fmt.Println()
+	}
+
+	// Create shutdown coordinator for coordinated graceful shutdown
+	coord := shutdown.New(townRoot)
+
+	// Get grace period from env var or use default
+	if gracePeriod := os.Getenv("GT_SHUTDOWN_GRACE_PERIOD"); gracePeriod != "" {
+		if d, err := time.ParseDuration(gracePeriod); err == nil {
+			coord.SetGracePeriod(d)
+		}
+	}
+
+	// Phase 0: Begin graceful shutdown (creates signal file, notifies daemon)
+	if !downDryRun {
+		if err := coord.BeginGracefulShutdown(); err != nil {
+			return fmt.Errorf("cannot begin graceful shutdown: %w", err)
+		}
+		defer func() {
+			_ = coord.EndGracefulShutdown()
+		}()
+
+		fmt.Printf("Graceful shutdown initiated (grace period: %v)\n", coord.GracePeriod())
+		// Give daemon a moment to notice the shutdown signal and stop auto-restarting
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	rigs := discoverRigs(townRoot)
@@ -384,37 +400,12 @@ func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
 	// Try graceful shutdown first (Ctrl-C, best-effort interrupt)
 	if !downForce {
 		_ = t.SendKeysRaw(sessionName, "C-c")
-		time.Sleep(100 * time.Millisecond)
+		// Wait longer for graceful shutdown to allow agents to clean up
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Kill the session
 	return true, t.KillSession(sessionName)
-}
-
-// acquireShutdownLock prevents concurrent shutdowns.
-// Returns the lock (caller must defer Unlock()) or error if lock held.
-func acquireShutdownLock(townRoot string) (*flock.Flock, error) {
-	lockPath := filepath.Join(townRoot, shutdownLockFile)
-
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
-		return nil, fmt.Errorf("creating lock directory: %w", err)
-	}
-
-	lock := flock.New(lockPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownLockTimeout)
-	defer cancel()
-
-	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return nil, fmt.Errorf("lock acquisition failed: %w", err)
-	}
-
-	if !locked {
-		return nil, fmt.Errorf("another shutdown is in progress (lock held: %s)", lockPath)
-	}
-
-	return lock, nil
 }
 
 // verifyShutdown checks for respawned processes after shutdown.
