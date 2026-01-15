@@ -37,13 +37,136 @@ type FeedEvent struct {
 	Count     int                    `json:"count,omitempty"` // For aggregated events
 }
 
+// ringBuffer is a circular buffer for caching recent feed events in memory.
+// This eliminates repeated full file reads for dedupe/aggregation checks.
+type ringBuffer struct {
+	events []FeedEvent
+	size   int
+	head   int
+	count  int
+	mu     sync.RWMutex
+}
+
+// newRingBuffer creates a new ring buffer with the given capacity.
+func newRingBuffer(capacity int) *ringBuffer {
+	return &ringBuffer{
+		events: make([]FeedEvent, capacity),
+		size:   capacity,
+	}
+}
+
+// add adds a new event to the ring buffer, overwriting the oldest if full.
+func (rb *ringBuffer) add(event FeedEvent) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.events[rb.head] = event
+	rb.head = (rb.head + 1) % rb.size
+	if rb.count < rb.size {
+		rb.count++
+	}
+}
+
+// recent returns events within the given time window, most recent first.
+func (rb *ringBuffer) recent(window time.Duration) []FeedEvent {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	now := time.Now()
+	cutoff := now.Add(-window)
+	var result []FeedEvent
+
+	// Iterate backwards from most recent to oldest
+	for i := 0; i < rb.count; i++ {
+		// Calculate index: (head - 1 - i + size) % size
+		idx := (rb.head - 1 - i + rb.size) % rb.size
+		event := rb.events[idx]
+
+		// Parse timestamp
+		ts, err := time.Parse(time.RFC3339, event.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		// Stop if we've gone past the window
+		if ts.Before(cutoff) {
+			break
+		}
+
+		result = append(result, event)
+	}
+
+	return result
+}
+
+// eventsRingBuffer is a circular buffer for caching recent raw events in memory.
+type eventsRingBuffer struct {
+	events []events.Event
+	size   int
+	head   int
+	count  int
+	mu     sync.RWMutex
+}
+
+// newEventsRingBuffer creates a new events ring buffer with the given capacity.
+func newEventsRingBuffer(capacity int) *eventsRingBuffer {
+	return &eventsRingBuffer{
+		events: make([]events.Event, capacity),
+		size:   capacity,
+	}
+}
+
+// add adds a new event to the ring buffer, overwriting the oldest if full.
+func (rb *eventsRingBuffer) add(event events.Event) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.events[rb.head] = event
+	rb.head = (rb.head + 1) % rb.size
+	if rb.count < rb.size {
+		rb.count++
+	}
+}
+
+// recent returns events within the given time window, most recent first.
+func (rb *eventsRingBuffer) recent(window time.Duration) []events.Event {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	now := time.Now()
+	cutoff := now.Add(-window)
+	var result []events.Event
+
+	// Iterate backwards from most recent to oldest
+	for i := 0; i < rb.count; i++ {
+		// Calculate index: (head - 1 - i + size) % size
+		idx := (rb.head - 1 - i + rb.size) % rb.size
+		event := rb.events[idx]
+
+		// Parse timestamp
+		ts, err := time.Parse(time.RFC3339, event.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		// Stop if we've gone past the window
+		if ts.Before(cutoff) {
+			break
+		}
+
+		result = append(result, event)
+	}
+
+	return result
+}
+
 // Curator manages the feed curation process.
-// ZFC: State is derived from the events file, not cached in memory.
+// Uses in-memory ring buffer caches for efficient dedupe/aggregation lookups.
 type Curator struct {
-	townRoot string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	townRoot   string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	feedCache  *ringBuffer        // Cache of recent feed events for dedupe
+	eventsCache *eventsRingBuffer  // Cache of recent raw events for aggregation
 }
 
 // Deduplication/aggregation settings
@@ -64,10 +187,67 @@ const (
 // NewCurator creates a new feed curator.
 func NewCurator(townRoot string) *Curator {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Curator{
-		townRoot: townRoot,
-		ctx:      ctx,
-		cancel:   cancel,
+	c := &Curator{
+		townRoot:    townRoot,
+		ctx:         ctx,
+		cancel:      cancel,
+		feedCache:   newRingBuffer(1000), // Cache last 1000 feed events (~10-30s of activity)
+		eventsCache: newEventsRingBuffer(5000), // Cache last 5000 raw events for sling counting
+	}
+	// Initialize caches from existing files on startup
+	c.initFeedCache()
+	c.initEventsCache()
+	return c
+}
+
+// initFeedCache loads recent feed events from disk into the ring buffer cache.
+// This primes the cache so we don't start with an empty state after restart.
+func (c *Curator) initFeedCache() {
+	feedPath := filepath.Join(c.townRoot, FeedFile)
+	data, err := os.ReadFile(feedPath)
+	if err != nil {
+		return // No existing feed file, start with empty cache
+	}
+
+	// Parse lines and add to cache (most recent last, so they're most recent in buffer)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var event FeedEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		c.feedCache.add(event)
+	}
+}
+
+// initEventsCache loads recent raw events from disk into the ring buffer cache.
+func (c *Curator) initEventsCache() {
+	eventsPath := filepath.Join(c.townRoot, events.EventsFile)
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		return // No existing events file, start with empty cache
+	}
+
+	// Parse lines and add to cache
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var event events.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		c.eventsCache.add(event)
 	}
 }
 
@@ -138,6 +318,9 @@ func (c *Curator) processLine(line string) {
 		return // Skip malformed lines
 	}
 
+	// Cache all raw events for aggregation queries (sling counting)
+	c.eventsCache.add(rawEvent)
+
 	// Filter by visibility - only process feed-visible events
 	if rawEvent.Visibility != events.VisibilityFeed && rawEvent.Visibility != events.VisibilityBoth {
 		return
@@ -173,94 +356,16 @@ func (c *Curator) shouldDedupe(event *events.Event) bool {
 	return false
 }
 
-// readRecentFeedEvents reads feed events from the feed file within the given time window.
-// ZFC: The feed file is the observable state of what we've already output.
+// readRecentFeedEvents reads feed events from the in-memory cache within the given time window.
+// Uses ring buffer cache for O(1) lookups instead of reading the entire file.
 func (c *Curator) readRecentFeedEvents(window time.Duration) []FeedEvent {
-	feedPath := filepath.Join(c.townRoot, FeedFile)
-
-	data, err := os.ReadFile(feedPath)
-	if err != nil {
-		return nil
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-window)
-	var result []FeedEvent
-
-	// Parse lines from the end (most recent first) for efficiency
-	lines := strings.Split(string(data), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-
-		var event FeedEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-
-		// Parse timestamp
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			continue
-		}
-
-		// Stop if we've gone past the window
-		if ts.Before(cutoff) {
-			break
-		}
-
-		result = append(result, event)
-	}
-
-	return result
+	return c.feedCache.recent(window)
 }
 
-// readRecentEvents reads events from the events file within the given time window.
-// ZFC: This is the observable state that replaces in-memory caching.
-// Uses tail-like reading for performance (reads last N lines).
+// readRecentEvents reads events from the in-memory cache within the given time window.
+// Uses ring buffer cache for O(1) lookups instead of reading the entire file.
 func (c *Curator) readRecentEvents(window time.Duration) []events.Event {
-	eventsPath := filepath.Join(c.townRoot, events.EventsFile)
-
-	// Read the file (for small files, this is fine; for large files, consider tail-like reading)
-	data, err := os.ReadFile(eventsPath)
-	if err != nil {
-		return nil
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-window)
-	var result []events.Event
-
-	// Parse lines from the end (most recent first) for efficiency
-	lines := strings.Split(string(data), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-
-		var event events.Event
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-
-		// Parse timestamp
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			continue
-		}
-
-		// Stop if we've gone past the window
-		if ts.Before(cutoff) {
-			break
-		}
-
-		result = append(result, event)
-	}
-
-	return result
+	return c.eventsCache.recent(window)
 }
 
 // countRecentSlings counts sling events from an actor within the given window.
@@ -276,8 +381,7 @@ func (c *Curator) countRecentSlings(actor string, window time.Duration) int {
 	return count
 }
 
-// writeFeedEvent writes a curated event to the feed file.
-// ZFC: Aggregation is derived from the events file, not in-memory cache.
+// writeFeedEvent writes a curated event to the feed file and updates the cache.
 func (c *Curator) writeFeedEvent(event *events.Event) {
 	feedEvent := FeedEvent{
 		Timestamp: event.Timestamp,
@@ -288,7 +392,7 @@ func (c *Curator) writeFeedEvent(event *events.Event) {
 		Payload:   event.Payload,
 	}
 
-	// Check for aggregation opportunity (ZFC: derive from events file)
+	// Check for aggregation opportunity (derive from events file)
 	if event.Type == events.TypeSling {
 		slingCount := c.countRecentSlings(event.Actor, slingAggregateWindow)
 		if slingCount >= minAggregateCount {
@@ -310,7 +414,12 @@ func (c *Curator) writeFeedEvent(event *events.Event) {
 	}
 	defer f.Close()
 
-	_, _ = f.Write(data)
+	if _, err := f.Write(data); err != nil {
+		return
+	}
+
+	// Update cache with the newly written event
+	c.feedCache.add(feedEvent)
 }
 
 // generateSummary creates a human-readable summary of an event.
