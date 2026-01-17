@@ -355,6 +355,48 @@ func (t *Tmux) KillServer() error {
 	return err
 }
 
+// CleanupOrphanedSessions kills any Gas Town sessions that have zombie agents.
+// This prevents session accumulation when gt is restarted without proper shutdown.
+//
+// A session is cleaned up if:
+// - Its name starts with "gt-" or "hq-" (Gas Town naming convention)
+// - The agent (Claude) is not running in it (zombie session)
+//
+// Returns the number of sessions cleaned up and any errors encountered.
+func (t *Tmux) CleanupOrphanedSessions() (int, error) {
+	sessions, err := t.ListSessions()
+	if err != nil {
+		return 0, err
+	}
+
+	cleaned := 0
+	for _, session := range sessions {
+		if session == "" {
+			continue
+		}
+
+		// Only clean up Gas Town sessions (both gt-* and hq-* prefixes)
+		if !strings.HasPrefix(session, "gt-") && !strings.HasPrefix(session, "hq-") {
+			continue
+		}
+
+		// Check if Claude is running - if so, leave it alone
+		if t.IsClaudeRunning(session) {
+			continue
+		}
+
+		// Zombie session: tmux alive but Claude dead
+		// Kill it with process cleanup to prevent orphan processes
+		if err := t.KillSessionWithProcesses(session); err != nil {
+			// Log but continue - don't fail the whole cleanup
+			continue
+		}
+		cleaned++
+	}
+
+	return cleaned, nil
+}
+
 // SetExitEmpty controls the tmux exit-empty server option.
 // When on (default), the server exits when there are no sessions.
 // When off, the server stays running even with no sessions.
