@@ -190,7 +190,8 @@ func runSling(cmd *cobra.Command, args []string) error {
 	// Determine target agent (self or specified)
 	var targetAgent string
 	var targetPane string
-	var hookWorkDir string // Working directory for running bd hook commands
+	var hookWorkDir string        // Working directory for running bd hook commands
+	var hookSetAtomically bool    // True if hook was set during polecat spawn (skip redundant update)
 
 	if len(args) > 1 {
 		target := args[1]
@@ -247,6 +248,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 				targetAgent = spawnInfo.AgentID()
 				targetPane = spawnInfo.Pane
 				hookWorkDir = spawnInfo.ClonePath // Run bd commands from polecat's worktree
+				hookSetAtomically = true          // Hook was set during spawn (GH #gt-mzyk5)
 
 				// Wake witness and refinery to monitor the new polecat
 				wakeRigAgents(rigName)
@@ -278,6 +280,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 						targetAgent = spawnInfo.AgentID()
 						targetPane = spawnInfo.Pane
 						hookWorkDir = spawnInfo.ClonePath
+						hookSetAtomically = true // Hook was set during spawn (GH #gt-mzyk5)
 
 						// Wake witness and refinery to monitor the new polecat
 						wakeRigAgents(rigName)
@@ -505,7 +508,12 @@ func runSling(cmd *cobra.Command, args []string) error {
 	_ = events.LogFeed(events.TypeSling, actor, events.SlingPayload(beadID, targetAgent))
 
 	// Update agent bead's hook_bead field (ZFC: agents track their current work)
-	updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
+	// Skip if hook was already set atomically during polecat spawn - avoids "agent bead not found"
+	// error when polecat redirect setup fails (GH #gt-mzyk5: agent bead created in rig beads
+	// but updateAgentHookBead looks in polecat's local beads if redirect is missing).
+	if !hookSetAtomically {
+		updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
+	}
 
 	// Auto-attach mol-polecat-work to polecat agent beads
 	// This ensures polecats have the standard work molecule attached for guidance.
