@@ -25,6 +25,9 @@ cycle. Witnesses check this timestamp to verify health."""
 formula = "mol-deacon-patrol"
 version = 9
 
+[vars]
+wisp_type = "patrol"
+
 [[steps]]
 id = "inbox-check"
 title = "Handle callbacks from agents"
