@@ -25,7 +25,10 @@ import (
 // generateShortID generates a short random ID (5 lowercase chars).
 func generateShortID() string {
 	b := make([]byte, 3)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if random generation fails
+		return fmt.Sprintf("%05d", time.Now().Unix()%100000)
+	}
 	return strings.ToLower(base32.StdEncoding.EncodeToString(b)[:5])
 }
 
@@ -594,14 +597,8 @@ func runConvoyStage(cmd *cobra.Command, args []string) error {
 	newStage := args[1]
 
 	// Validate stage
-	validStages := map[string]bool{
-		beads.ConvoyStagePlanning:  true,
-		beads.ConvoyStageExecution: true,
-		beads.ConvoyStageReview:    true,
-		beads.ConvoyStageComplete:  true,
-	}
-	if !validStages[newStage] {
-		return fmt.Errorf("invalid stage '%s' (valid: planning, execution, review, complete)", newStage)
+	if err := beads.ValidateConvoyStage(newStage); err != nil {
+		return err
 	}
 
 	townBeads, err := getTownBeadsDir()
@@ -637,6 +634,14 @@ func runConvoyStage(cmd *cobra.Command, args []string) error {
 	}
 
 	oldStage := fields.Stage
+
+	// Validate stage transition if there's an existing stage
+	if oldStage != "" && oldStage != newStage {
+		if err := beads.ValidateConvoyStageTransitionWithReopening(oldStage, newStage); err != nil {
+			return fmt.Errorf("stage transition: %w", err)
+		}
+	}
+
 	fields.Stage = newStage
 
 	// Update the issue description with new convoy fields

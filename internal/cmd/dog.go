@@ -28,12 +28,14 @@ var (
 	dogCallAll    bool
 
 	// Dispatch flags
-	dogDispatchPlugin string
-	dogDispatchRig    string
-	dogDispatchCreate bool
-	dogDispatchDog    string
-	dogDispatchJSON   bool
-	dogDispatchDryRun bool
+	dogDispatchPlugin  string
+	dogDispatchFormula string
+	dogDispatchRig     string
+	dogDispatchCreate  bool
+	dogDispatchDog     string
+	dogDispatchJSON    bool
+	dogDispatchDryRun  bool
+	dogDispatchVars    []string // --var flag for formula variables
 )
 
 var dogCmd = &cobra.Command{
@@ -156,9 +158,9 @@ Examples:
 }
 
 var dogDispatchCmd = &cobra.Command{
-	Use:   "dispatch --plugin <name>",
-	Short: "Dispatch plugin execution to a dog",
-	Long: `Dispatch a plugin for execution by a dog worker.
+	Use:   "dispatch --plugin <name> | --formula <name>",
+	Short: "Dispatch plugin or formula execution to a dog",
+	Long: `Dispatch a plugin or formula for execution by a dog worker.
 
 This is the formalized command for sending plugin work to dogs. The Deacon
 uses this during patrol cycles to dispatch plugins with open gates.
