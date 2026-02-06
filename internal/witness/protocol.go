@@ -30,6 +30,9 @@ var (
 
 	// SWARM_START - mayor initiating batch work
 	PatternSwarmStart = regexp.MustCompile(`^SWARM_START`)
+
+	// HEARTBEAT <name> - worker liveness signal (P1: oc-hyor)
+	PatternHeartbeat = regexp.MustCompile(`^💓\s*HEARTBEAT\s+(\S+)`)
 )
 
 // ProtocolType identifies the type of protocol message.
@@ -43,6 +46,7 @@ const (
 	ProtoMergeFailed       ProtocolType = "merge_failed"
 	ProtoHandoff           ProtocolType = "handoff"
 	ProtoSwarmStart        ProtocolType = "swarm_start"
+	ProtoHeartbeat         ProtocolType = "heartbeat" // P1: oc-hyor
 	ProtoUnknown           ProtocolType = "unknown"
 )
 
@@ -92,6 +96,17 @@ type SwarmStartPayload struct {
 	StartedAt time.Time
 }
 
+// HeartbeatPayload contains parsed data from a HEARTBEAT message (P1: oc-hyor).
+type HeartbeatPayload struct {
+	WorkerName  string
+	WorkerType  string // polecat, dog, etc.
+	Rig         string
+	Health      string    // healthy, stale, dead
+	State       string    // working, idle, blocked
+	AssignedWork string   // Current work item ID
+	Timestamp   time.Time
+}
+
 // ClassifyMessage determines the protocol type from a message subject.
 func ClassifyMessage(subject string) ProtocolType {
 	switch {
@@ -109,6 +124,8 @@ func ClassifyMessage(subject string) ProtocolType {
 		return ProtoHandoff
 	case PatternSwarmStart.MatchString(subject):
 		return ProtoSwarmStart
+	case PatternHeartbeat.MatchString(subject):
+		return ProtoHeartbeat
 	default:
 		return ProtoUnknown
 	}
@@ -274,7 +291,9 @@ func ParseSwarmStart(body string) (*SwarmStartPayload, error) {
 		if strings.HasPrefix(line, "SwarmID:") || strings.HasPrefix(line, "swarm_id:") {
 			payload.SwarmID = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "SwarmID:"), "swarm_id:"))
 		} else if strings.HasPrefix(line, "Total:") {
-			_, _ = fmt.Sscanf(line, "Total: %d", &payload.Total)
+			if _, err := fmt.Sscanf(line, "Total: %d", &payload.Total); err != nil {
+				// Ignore parsing errors for optional fields
+			}
 		}
 	}
 
@@ -307,6 +326,57 @@ type HelpAssessment struct {
 	HelpAction  string // What the Witness can do to help
 	NeedsEscalation bool
 	EscalationReason string
+}
+
+// ParseHeartbeat extracts payload from a HEARTBEAT message (P1: oc-hyor).
+// Subject format: 💓 HEARTBEAT <worker-name>
+// Body format:
+//   type: polecat|dog|...
+//   rig: <rig-name>
+//   health: healthy|stale|dead
+//   state: working|idle|blocked
+//   assigned_work: <issue-id>
+func ParseHeartbeat(subject, body string) (*HeartbeatPayload, error) {
+	matches := PatternHeartbeat.FindStringSubmatch(subject)
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("invalid HEARTBEAT subject: %s", subject)
+	}
+
+	payload := &HeartbeatPayload{
+		WorkerName: matches[1],
+		Timestamp:  time.Now(),
+	}
+
+	// Parse body fields
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "type":
+			payload.WorkerType = value
+		case "rig":
+			payload.Rig = value
+		case "health":
+			payload.Health = value
+		case "state":
+			payload.State = value
+		case "assigned_work", "work":
+			payload.AssignedWork = value
+		}
+	}
+
+	return payload, nil
 }
 
 // AssessHelpRequest provides guidance for the Witness to assess a help request.

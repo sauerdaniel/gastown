@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -809,7 +810,7 @@ func TestMessagingConfigPath(t *testing.T) {
 	t.Parallel()
 	path := MessagingConfigPath("/home/user/gt")
 	expected := "/home/user/gt/config/messaging.json"
-	if path != expected {
+	if filepath.ToSlash(path) != expected {
 		t.Errorf("MessagingConfigPath = %q, want %q", path, expected)
 	}
 }
@@ -1217,6 +1218,13 @@ func TestBuildStartupCommand_UsesRoleAgentsFromTownSettings(t *testing.T) {
 
 	binDir := t.TempDir()
 	for _, name := range []string{"gemini", "codex"} {
+		if runtime.GOOS == "windows" {
+			path := filepath.Join(binDir, name+".cmd")
+			if err := os.WriteFile(path, []byte("@echo off\r\nexit /b 0\r\n"), 0644); err != nil {
+				t.Fatalf("write %s stub: %v", name, err)
+			}
+			continue
+		}
 		path := filepath.Join(binDir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 			t.Fatalf("write %s stub: %v", name, err)
@@ -1595,7 +1603,7 @@ func TestDaemonPatrolConfigPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.townRoot, func(t *testing.T) {
 			path := DaemonPatrolConfigPath(tt.townRoot)
-			if path != tt.expected {
+			if filepath.ToSlash(path) != filepath.ToSlash(tt.expected) {
 				t.Errorf("DaemonPatrolConfigPath(%q) = %q, want %q", tt.townRoot, path, tt.expected)
 			}
 		})
@@ -2529,7 +2537,7 @@ func TestEscalationConfigPath(t *testing.T) {
 
 	path := EscalationConfigPath("/home/user/gt")
 	expected := "/home/user/gt/settings/escalation.json"
-	if path != expected {
+	if filepath.ToSlash(path) != expected {
 		t.Errorf("EscalationConfigPath = %q, want %q", path, expected)
 	}
 }
@@ -2660,5 +2668,65 @@ func TestQuoteForShell(t *testing.T) {
 				t.Errorf("quoteForShell(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildStartupCommandWithAgentOverride_SetsGTAgent(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	// Create necessary config files
+	townSettings := NewTownSettings()
+	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatalf("SaveTownSettings: %v", err)
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), NewRigSettings()); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd, err := BuildStartupCommandWithAgentOverride(
+		map[string]string{"GT_ROLE": constants.RoleWitness},
+		rigPath,
+		"",
+		"gemini",
+	)
+	if err != nil {
+		t.Fatalf("BuildStartupCommandWithAgentOverride: %v", err)
+	}
+
+	// Should include GT_AGENT=gemini in export so handoff can preserve it
+	if !strings.Contains(cmd, "GT_AGENT=gemini") {
+		t.Errorf("expected GT_AGENT=gemini in command, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommandWithAgentOverride_NoGTAgentWhenNoOverride(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	// Create necessary config files
+	townSettings := NewTownSettings()
+	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatalf("SaveTownSettings: %v", err)
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), NewRigSettings()); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd, err := BuildStartupCommandWithAgentOverride(
+		map[string]string{"GT_ROLE": constants.RoleWitness},
+		rigPath,
+		"",
+		"", // No override
+	)
+	if err != nil {
+		t.Fatalf("BuildStartupCommandWithAgentOverride: %v", err)
+	}
+
+	// Should NOT include GT_AGENT when no override is used
+	if strings.Contains(cmd, "GT_AGENT=") {
+		t.Errorf("expected no GT_AGENT in command when no override, got: %q", cmd)
 	}
 }

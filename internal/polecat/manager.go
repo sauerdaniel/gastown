@@ -344,16 +344,36 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error)
 	// NOTE: Slash commands (.claude/commands/) are provisioned at town level by gt install.
 	// All agents inherit them via Claude's directory traversal - no per-workspace copies needed.
 
+	// Determine worktree base path for lifecycle tracking
+	// This is either .repo.git (bare repo) or mayor/rig (legacy)
+	bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
+	worktreeBase := filepath.Join(m.rig.Path, "mayor", "rig") // default to legacy
+	if info, statErr := os.Stat(bareRepoPath); statErr == nil && info.IsDir() {
+		worktreeBase = bareRepoPath
+	}
+
 	// Create or reopen agent bead for ZFC compliance (self-report state).
 	// State starts as "spawning" - will be updated to "working" when Claude starts.
 	// HookBead is set atomically at creation time if provided (avoids cross-beads routing issues).
 	// Uses CreateOrReopenAgentBead to handle re-spawning with same name (GH #332).
+	//
+	// P1 (oc-hyor): Extended with worker lifecycle tracking for crash recovery.
 	agentID := m.agentBeadID(name)
+	sessionID := fmt.Sprintf("polecat:%s:%s", m.rig.Name, name)
 	_, err = m.beads.CreateOrReopenAgentBead(agentID, agentID, &beads.AgentFields{
 		RoleType:   "polecat",
 		Rig:        m.rig.Name,
 		AgentState: "spawning",
 		HookBead:   opts.HookBead, // Set atomically at spawn time
+
+		// P1 (oc-hyor): Worker lifecycle fields
+		LifecycleState:   beads.LifecycleSpawning,
+		Health:           beads.HealthHealthy,
+		HeartbeatTimeout: "300", // 5 minutes default
+		SessionID:        sessionID,
+		Workspace:        clonePath,
+		WorktreeBase:     worktreeBase,
+		AssignedWork:     opts.HookBead, // Same as HookBead for transient workers
 	})
 	if err != nil {
 		// Non-fatal - log warning but continue

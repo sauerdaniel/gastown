@@ -25,7 +25,10 @@ import (
 // generateShortID generates a short random ID (5 lowercase chars).
 func generateShortID() string {
 	b := make([]byte, 3)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if random generation fails
+		return fmt.Sprintf("%05d", time.Now().Unix()%100000)
+	}
 	return strings.ToLower(base32.StdEncoding.EncodeToString(b)[:5])
 }
 
@@ -229,6 +232,27 @@ Examples:
 	RunE: runConvoyClose,
 }
 
+var convoyStageCmd = &cobra.Command{
+	Use:   "stage <convoy-id> <stage>",
+	Short: "Change convoy workflow stage",
+	Long: `Change the workflow stage of a convoy.
+
+Stages: planning | execution | review | complete
+
+The stage tracks where the convoy is in its lifecycle:
+- planning: Requirements gathering, work breakdown
+- execution: Workers are actively processing tracked issues
+- review: All work complete, under final review
+- complete: Convoy closed, results delivered
+
+Examples:
+  gt convoy stage hq-cv-abc execution
+  gt convoy stage hq-cv-xyz review`,
+	Args:      cobra.ExactArgs(2),
+	RunE:      runConvoyStage,
+	ValidArgs: []string{"planning", "execution", "review", "complete"},
+}
+
 func init() {
 	// Create flags
 	convoyCreateCmd.Flags().StringVar(&convoyMolecule, "molecule", "", "Associated molecule ID")
@@ -263,6 +287,7 @@ func init() {
 	convoyCmd.AddCommand(convoyCheckCmd)
 	convoyCmd.AddCommand(convoyStrandedCmd)
 	convoyCmd.AddCommand(convoyCloseCmd)
+	convoyCmd.AddCommand(convoyStageCmd)
 
 	rootCmd.AddCommand(convoyCmd)
 }
@@ -562,6 +587,86 @@ func runConvoyClose(cmd *cobra.Command, args []string) error {
 	} else {
 		// Check if convoy has a notify address in description
 		notifyConvoyCompletion(townBeads, convoyID, convoy.Title)
+	}
+
+	return nil
+}
+
+func runConvoyStage(cmd *cobra.Command, args []string) error {
+	convoyID := args[0]
+	newStage := args[1]
+
+	// Validate stage
+	if err := beads.ValidateConvoyStage(newStage); err != nil {
+		return err
+	}
+
+	townBeads, err := getTownBeadsDir()
+	if err != nil {
+		return err
+	}
+
+	// Get the convoy issue
+	showArgs := []string{"show", convoyID, "--json"}
+	showCmd := exec.Command("bd", showArgs...)
+	showCmd.Dir = townBeads
+	var stdout bytes.Buffer
+	showCmd.Stdout = &stdout
+
+	if err := showCmd.Run(); err != nil {
+		return fmt.Errorf("convoy '%s' not found", convoyID)
+	}
+
+	var issues []*beads.Issue
+	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil {
+		return fmt.Errorf("parsing convoy data: %w", err)
+	}
+	if len(issues) == 0 {
+		return fmt.Errorf("convoy '%s' not found", convoyID)
+	}
+
+	issue := issues[0]
+
+	// Parse existing convoy fields or create new
+	fields := beads.ParseConvoyFields(issue)
+	if fields == nil {
+		fields = &beads.ConvoyFields{}
+	}
+
+	oldStage := fields.Stage
+
+	// Validate stage transition if there's an existing stage
+	if oldStage != "" && oldStage != newStage {
+		if err := beads.ValidateConvoyStageTransitionWithReopening(oldStage, newStage); err != nil {
+			return fmt.Errorf("stage transition: %w", err)
+		}
+	}
+
+	fields.Stage = newStage
+
+	// Update the issue description with new convoy fields
+	newDesc := beads.SetConvoyFields(issue, fields)
+
+	// Save the updated description
+	updateArgs := []string{"update", convoyID, "--description=" + newDesc}
+	updateCmd := exec.Command("bd", updateArgs...)
+	updateCmd.Dir = townBeads
+	var stderr bytes.Buffer
+	updateCmd.Stderr = &stderr
+
+	if err := updateCmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return fmt.Errorf("updating convoy stage: %s", errMsg)
+	}
+
+	fmt.Printf("%s Updated convoy %s\n", style.Bold.Render("✓"), convoyID)
+	if oldStage != "" {
+		fmt.Printf("  Stage: %s → %s\n", oldStage, newStage)
+	} else {
+		fmt.Printf("  Stage: %s\n", newStage)
 	}
 
 	return nil

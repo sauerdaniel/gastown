@@ -29,6 +29,85 @@ type HandlerResult struct {
 	Error        error
 }
 
+// HandleHeartbeat processes a HEARTBEAT message from a worker (P1: oc-hyor).
+// Updates the worker's agent bead with current timestamp and health state.
+// This enables crash detection via missed heartbeats.
+func HandleHeartbeat(workDir, rigName string, msg *mail.Message) *HandlerResult {
+	result := &HandlerResult{
+		MessageID:    msg.ID,
+		ProtocolType: ProtoHeartbeat,
+	}
+
+	// Parse the heartbeat message
+	payload, err := ParseHeartbeat(msg.Subject, msg.Body)
+	if err != nil {
+		result.Error = fmt.Errorf("parsing HEARTBEAT: %w", err)
+		return result
+	}
+
+	// Find beads directory
+	beadsDir := beads.ResolveBeadsDir(workDir)
+	b := beads.NewWithBeadsDir(workDir, beadsDir)
+
+	// Construct agent bead ID
+	// Format depends on worker type, but for polecats it's typically: <prefix>-<rig>-polecat-<name>
+	prefix := beads.GetPrefixForRig(workDir, rigName)
+	var agentBeadID string
+	if payload.WorkerType == "polecat" {
+		agentBeadID = beads.PolecatBeadIDWithPrefix(prefix, rigName, payload.WorkerName)
+	} else {
+		// Generic format for other worker types (dogs, etc.)
+		agentBeadID = fmt.Sprintf("%s-%s-%s-%s", prefix, rigName, payload.WorkerType, payload.WorkerName)
+	}
+
+	// Get the agent bead
+	issue, fields, err := b.GetAgentBead(agentBeadID)
+	if err != nil {
+		result.Error = fmt.Errorf("getting agent bead %s: %w", agentBeadID, err)
+		return result
+	}
+	if fields == nil {
+		result.Error = fmt.Errorf("agent bead %s has no fields", agentBeadID)
+		return result
+	}
+
+	// Update lifecycle fields with heartbeat data
+	now := time.Now().UTC().Format(time.RFC3339)
+	fields.LastHeartbeat = now
+	fields.Health = beads.HealthHealthy // Receiving a heartbeat means healthy
+
+	// Update state if provided in heartbeat
+	if payload.State != "" {
+		switch payload.State {
+		case "working":
+			fields.LifecycleState = beads.LifecycleWorking
+		case "idle":
+			fields.LifecycleState = beads.LifecycleIdle
+		case "blocked":
+			fields.LifecycleState = beads.LifecycleBlocked
+		}
+	}
+
+	// Update assigned work if provided
+	if payload.AssignedWork != "" {
+		fields.AssignedWork = payload.AssignedWork
+	}
+
+	// Update the agent bead description
+	newDesc := beads.FormatAgentDescription(issue.Title, fields)
+	if err := b.Update(agentBeadID, beads.UpdateOptions{
+		Description: &newDesc,
+	}); err != nil {
+		result.Error = fmt.Errorf("updating agent bead: %w", err)
+		return result
+	}
+
+	result.Handled = true
+	result.Action = fmt.Sprintf("updated heartbeat for %s (health=%s, state=%s)", payload.WorkerName, fields.Health, fields.LifecycleState)
+
+	return result
+}
+
 // HandlePolecatDone processes a POLECAT_DONE message from a polecat.
 // For ESCALATED/DEFERRED exits (no pending MR), auto-nukes if clean.
 // For PHASE_COMPLETE exits, recycles the polecat (session ends, worktree kept).
