@@ -664,3 +664,361 @@ func ExpandRolePattern(pattern, townRoot, rig, name, role string) string {
 	result = strings.ReplaceAll(result, "{role}", role)
 	return result
 }
+
+// ConvoyFields holds structured fields for convoy beads.
+// Convoys are coordination units that track batches of work across rigs.
+// These fields are stored as "key: value" lines in the description.
+type ConvoyFields struct {
+	// Target rigs for this convoy (comma-separated list)
+	Rigs string
+
+	// Work items spawned from this convoy (comma-separated issue IDs)
+	SpawnedWork string
+
+	// Convoy workflow stage
+	Stage string // planning | execution | review | complete
+
+	// Coordination metadata
+	Coordinator string // Agent coordinating this convoy (typically "mayor")
+	Started     string // ISO 8601 timestamp when convoy started execution
+	Deadline    string // ISO 8601 deadline (optional)
+
+	// Formula reference (if convoy was spawned from a formula)
+	Formula string
+}
+
+// Convoy stage constants
+const (
+	ConvoyStagePlanning  = "planning"
+	ConvoyStageExecution = "execution"
+	ConvoyStageReview    = "review"
+	ConvoyStageComplete  = "complete"
+)
+
+// ParseConvoyFields extracts convoy fields from an issue's description.
+// Fields are expected as "key: value" lines. Returns nil if no convoy fields found.
+func ParseConvoyFields(issue *Issue) *ConvoyFields {
+	if issue == nil || issue.Description == "" {
+		return nil
+	}
+
+	fields := &ConvoyFields{}
+	hasFields := false
+
+	for _, line := range strings.Split(issue.Description, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		colonIdx := strings.Index(line, ":")
+		if colonIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:colonIdx])
+		value := strings.TrimSpace(line[colonIdx+1:])
+		if value == "" || value == "null" {
+			continue
+		}
+
+		switch strings.ToLower(key) {
+		case "rigs":
+			fields.Rigs = value
+			hasFields = true
+		case "spawned_work", "spawned-work", "spawnedwork":
+			fields.SpawnedWork = value
+			hasFields = true
+		case "stage":
+			fields.Stage = value
+			hasFields = true
+		case "coordinator":
+			fields.Coordinator = value
+			hasFields = true
+		case "started":
+			fields.Started = value
+			hasFields = true
+		case "deadline":
+			fields.Deadline = value
+			hasFields = true
+		case "formula":
+			fields.Formula = value
+			hasFields = true
+		}
+	}
+
+	if !hasFields {
+		return nil
+	}
+	return fields
+}
+
+// FormatConvoyFields formats ConvoyFields as a string suitable for issue description.
+// Only non-empty fields are included.
+func FormatConvoyFields(fields *ConvoyFields) string {
+	if fields == nil {
+		return ""
+	}
+
+	var lines []string
+
+	if fields.Rigs != "" {
+		lines = append(lines, "rigs: "+fields.Rigs)
+	}
+	if fields.SpawnedWork != "" {
+		lines = append(lines, "spawned_work: "+fields.SpawnedWork)
+	}
+	if fields.Stage != "" {
+		lines = append(lines, "stage: "+fields.Stage)
+	}
+	if fields.Coordinator != "" {
+		lines = append(lines, "coordinator: "+fields.Coordinator)
+	}
+	if fields.Started != "" {
+		lines = append(lines, "started: "+fields.Started)
+	}
+	if fields.Deadline != "" {
+		lines = append(lines, "deadline: "+fields.Deadline)
+	}
+	if fields.Formula != "" {
+		lines = append(lines, "formula: "+fields.Formula)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// SetConvoyFields updates an issue's description with the given convoy fields.
+// Existing convoy field lines are replaced; other content is preserved.
+// Returns the new description string.
+func SetConvoyFields(issue *Issue, fields *ConvoyFields) string {
+	if issue == nil {
+		return FormatConvoyFields(fields)
+	}
+
+	// Known convoy field keys (lowercase)
+	convoyKeys := map[string]bool{
+		"rigs":         true,
+		"spawned_work": true,
+		"spawned-work": true,
+		"spawnedwork":  true,
+		"stage":        true,
+		"coordinator":  true,
+		"started":      true,
+		"deadline":     true,
+		"formula":      true,
+	}
+
+	// Collect non-convoy lines from existing description
+	var otherLines []string
+	if issue.Description != "" {
+		for _, line := range strings.Split(issue.Description, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				// Preserve blank lines in content
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			// Check if this is a convoy field line
+			colonIdx := strings.Index(trimmed, ":")
+			if colonIdx == -1 {
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			key := strings.ToLower(strings.TrimSpace(trimmed[:colonIdx]))
+			if !convoyKeys[key] {
+				otherLines = append(otherLines, line)
+			}
+			// Skip convoy field lines - they'll be replaced
+		}
+	}
+
+	// Build new description: convoy fields first, then other content
+	formatted := FormatConvoyFields(fields)
+
+	// Trim trailing blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
+		otherLines = otherLines[:len(otherLines)-1]
+	}
+	// Trim leading blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
+		otherLines = otherLines[1:]
+	}
+
+	if formatted == "" {
+		return strings.Join(otherLines, "\n")
+	}
+	if len(otherLines) == 0 {
+		return formatted
+	}
+
+	return formatted + "\n\n" + strings.Join(otherLines, "\n")
+}
+
+// HookFields holds structured fields for hook/workspace references in work items.
+// These fields track the git-backed workspace where work artifacts are produced.
+// Hooks are persistent workspaces (git worktrees) where agents work.
+type HookFields struct {
+	Workspace    string // Workspace path (relative to rig root, e.g., "polecats/alice")
+	WorktreeBase string // Worktree base path (e.g., "mayor/rig")
+	Branch       string // Git branch for this work (e.g., "polecat/alice-20260206-143000")
+	Artifacts    string // Comma-separated artifact paths (relative to workspace)
+	Commits      string // Comma-separated commit SHAs
+}
+
+// ParseHookFields extracts hook fields from an issue's description.
+// Fields are expected as "key: value" lines. Returns nil if no hook fields found.
+func ParseHookFields(issue *Issue) *HookFields {
+	if issue == nil || issue.Description == "" {
+		return nil
+	}
+
+	fields := &HookFields{}
+	hasFields := false
+
+	for _, line := range strings.Split(issue.Description, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		colonIdx := strings.Index(line, ":")
+		if colonIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:colonIdx])
+		value := strings.TrimSpace(line[colonIdx+1:])
+		if value == "" || value == "null" {
+			continue
+		}
+
+		switch strings.ToLower(key) {
+		case "workspace", "hook_workspace", "hook-workspace":
+			fields.Workspace = value
+			hasFields = true
+		case "worktree_base", "worktree-base", "hook_worktree_base", "hook-worktree-base":
+			fields.WorktreeBase = value
+			hasFields = true
+		case "branch", "hook_branch", "hook-branch":
+			fields.Branch = value
+			hasFields = true
+		case "artifacts", "hook_artifacts", "hook-artifacts":
+			fields.Artifacts = value
+			hasFields = true
+		case "commits", "hook_commits", "hook-commits":
+			fields.Commits = value
+			hasFields = true
+		}
+	}
+
+	if !hasFields {
+		return nil
+	}
+	return fields
+}
+
+// FormatHookFields formats HookFields as a string suitable for issue description.
+// Only non-empty fields are included.
+func FormatHookFields(fields *HookFields) string {
+	if fields == nil {
+		return ""
+	}
+
+	var lines []string
+
+	if fields.Workspace != "" {
+		lines = append(lines, "hook_workspace: "+fields.Workspace)
+	}
+	if fields.WorktreeBase != "" {
+		lines = append(lines, "hook_worktree_base: "+fields.WorktreeBase)
+	}
+	if fields.Branch != "" {
+		lines = append(lines, "hook_branch: "+fields.Branch)
+	}
+	if fields.Artifacts != "" {
+		lines = append(lines, "hook_artifacts: "+fields.Artifacts)
+	}
+	if fields.Commits != "" {
+		lines = append(lines, "hook_commits: "+fields.Commits)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// SetHookFields updates an issue's description with the given hook fields.
+// Existing hook field lines are replaced; other content is preserved.
+// Returns the new description string.
+func SetHookFields(issue *Issue, fields *HookFields) string {
+	if issue == nil {
+		return FormatHookFields(fields)
+	}
+
+	// Known hook field keys (lowercase)
+	hookKeys := map[string]bool{
+		"workspace":          true,
+		"hook_workspace":     true,
+		"hook-workspace":     true,
+		"worktree_base":      true,
+		"worktree-base":      true,
+		"hook_worktree_base": true,
+		"hook-worktree-base": true,
+		"branch":             true,
+		"hook_branch":        true,
+		"hook-branch":        true,
+		"artifacts":          true,
+		"hook_artifacts":     true,
+		"hook-artifacts":     true,
+		"commits":            true,
+		"hook_commits":       true,
+		"hook-commits":       true,
+	}
+
+	// Collect non-hook lines from existing description
+	var otherLines []string
+	if issue.Description != "" {
+		for _, line := range strings.Split(issue.Description, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				// Preserve blank lines in content
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			// Check if this is a hook field line
+			colonIdx := strings.Index(trimmed, ":")
+			if colonIdx == -1 {
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			key := strings.ToLower(strings.TrimSpace(trimmed[:colonIdx]))
+			if !hookKeys[key] {
+				otherLines = append(otherLines, line)
+			}
+			// Skip hook field lines - they'll be replaced
+		}
+	}
+
+	// Build new description: hook fields first, then other content
+	formatted := FormatHookFields(fields)
+
+	// Trim trailing blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
+		otherLines = otherLines[:len(otherLines)-1]
+	}
+	// Trim leading blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
+		otherLines = otherLines[1:]
+	}
+
+	if formatted == "" {
+		return strings.Join(otherLines, "\n")
+	}
+	if len(otherLines) == 0 {
+		return formatted
+	}
+
+	return formatted + "\n\n" + strings.Join(otherLines, "\n")
+}

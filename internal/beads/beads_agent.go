@@ -20,6 +20,30 @@ type AgentFields struct {
 	NotificationLevel string // DND mode: verbose, normal, muted (default: normal)
 	// Note: RoleBead field removed - role definitions are now config-based.
 	// See internal/config/roles/*.toml and config-based-roles.md.
+
+	// === Worker Lifecycle Fields (P1: oc-hyor) ===
+	// Detailed lifecycle state for ephemeral workers (polecats, dogs)
+	LifecycleState string // spawning | idle | working | blocked | crashed | terminated
+
+	// Heartbeat tracking for health monitoring
+	LastHeartbeat     string // ISO 8601 timestamp of last heartbeat
+	HeartbeatTimeout  string // Heartbeat timeout in seconds (e.g., "300")
+	Health            string // healthy | stale | dead
+
+	// Resource tracking
+	PID         string // Process ID
+	SessionID   string // Session identifier (e.g., "agent:alice:main")
+	Workspace   string // Workspace path
+	WorktreeBase string // Worktree base path (for polecats)
+
+	// Assignment tracking
+	AssignedWork string // Currently assigned work item ID
+	AssignedAt   string // ISO 8601 timestamp when work was assigned
+
+	// Performance metrics
+	TasksCompleted  string // Number of tasks completed
+	AverageDuration string // Average task duration in seconds
+	LastCompletion  string // ISO 8601 timestamp of last completed task
 }
 
 // Notification level constants
@@ -27,6 +51,23 @@ const (
 	NotifyVerbose = "verbose" // All notifications (mail, convoy events, etc.)
 	NotifyNormal  = "normal"  // Important events only (default)
 	NotifyMuted   = "muted"   // Silent/DND mode - batch for later
+)
+
+// Worker lifecycle state constants (P1: oc-hyor)
+const (
+	LifecycleSpawning   = "spawning"   // Process starting, workspace initializing
+	LifecycleIdle       = "idle"       // Ready for work, no current assignment
+	LifecycleWorking    = "working"    // Actively working on assigned task
+	LifecycleBlocked    = "blocked"    // Waiting on dependency or external resource
+	LifecycleCrashed    = "crashed"    // Process died unexpectedly
+	LifecycleTerminated = "terminated" // Gracefully shut down
+)
+
+// Worker health state constants (P1: oc-hyor)
+const (
+	HealthHealthy = "healthy" // Heartbeat received within timeout window
+	HealthStale   = "stale"   // Heartbeat overdue
+	HealthDead    = "dead"    // No heartbeat for 2x timeout
 )
 
 // FormatAgentDescription creates a description string from agent fields.
@@ -74,6 +115,47 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		lines = append(lines, "notification_level: null")
 	}
 
+	// Worker lifecycle fields (optional - only for ephemeral workers)
+	if fields.LifecycleState != "" {
+		lines = append(lines, fmt.Sprintf("lifecycle_state: %s", fields.LifecycleState))
+	}
+	if fields.LastHeartbeat != "" {
+		lines = append(lines, fmt.Sprintf("last_heartbeat: %s", fields.LastHeartbeat))
+	}
+	if fields.HeartbeatTimeout != "" {
+		lines = append(lines, fmt.Sprintf("heartbeat_timeout: %s", fields.HeartbeatTimeout))
+	}
+	if fields.Health != "" {
+		lines = append(lines, fmt.Sprintf("health: %s", fields.Health))
+	}
+	if fields.PID != "" {
+		lines = append(lines, fmt.Sprintf("pid: %s", fields.PID))
+	}
+	if fields.SessionID != "" {
+		lines = append(lines, fmt.Sprintf("session_id: %s", fields.SessionID))
+	}
+	if fields.Workspace != "" {
+		lines = append(lines, fmt.Sprintf("workspace: %s", fields.Workspace))
+	}
+	if fields.WorktreeBase != "" {
+		lines = append(lines, fmt.Sprintf("worktree_base: %s", fields.WorktreeBase))
+	}
+	if fields.AssignedWork != "" {
+		lines = append(lines, fmt.Sprintf("assigned_work: %s", fields.AssignedWork))
+	}
+	if fields.AssignedAt != "" {
+		lines = append(lines, fmt.Sprintf("assigned_at: %s", fields.AssignedAt))
+	}
+	if fields.TasksCompleted != "" {
+		lines = append(lines, fmt.Sprintf("tasks_completed: %s", fields.TasksCompleted))
+	}
+	if fields.AverageDuration != "" {
+		lines = append(lines, fmt.Sprintf("average_duration: %s", fields.AverageDuration))
+	}
+	if fields.LastCompletion != "" {
+		lines = append(lines, fmt.Sprintf("last_completion: %s", fields.LastCompletion))
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -115,6 +197,33 @@ func ParseAgentFields(description string) *AgentFields {
 			fields.ActiveMR = value
 		case "notification_level":
 			fields.NotificationLevel = value
+		// Worker lifecycle fields (P1: oc-hyor)
+		case "lifecycle_state", "lifecycle-state":
+			fields.LifecycleState = value
+		case "last_heartbeat", "last-heartbeat":
+			fields.LastHeartbeat = value
+		case "heartbeat_timeout", "heartbeat-timeout":
+			fields.HeartbeatTimeout = value
+		case "health":
+			fields.Health = value
+		case "pid":
+			fields.PID = value
+		case "session_id", "session-id":
+			fields.SessionID = value
+		case "workspace":
+			fields.Workspace = value
+		case "worktree_base", "worktree-base":
+			fields.WorktreeBase = value
+		case "assigned_work", "assigned-work":
+			fields.AssignedWork = value
+		case "assigned_at", "assigned-at":
+			fields.AssignedAt = value
+		case "tasks_completed", "tasks-completed":
+			fields.TasksCompleted = value
+		case "average_duration", "average-duration":
+			fields.AverageDuration = value
+		case "last_completion", "last-completion":
+			fields.LastCompletion = value
 		}
 	}
 
