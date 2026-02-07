@@ -261,10 +261,7 @@ func runProjectionDaemonRun(cmd *cobra.Command, args []string) error {
 	}
 
 	config := projection.DefaultConfig(townRoot, pollInterval)
-	d, err := projection.New(config)
-	if err != nil {
-		return fmt.Errorf("creating daemon: %w", err)
-	}
+	d := projection.New(config)
 
 	return d.Run()
 }
@@ -276,10 +273,7 @@ func runProjectionDaemonOnce(cmd *cobra.Command, args []string) error {
 	}
 
 	config := projection.DefaultConfig(townRoot, 0) // No polling, single sync
-	d, err := projection.New(config)
-	if err != nil {
-		return fmt.Errorf("creating daemon: %w", err)
-	}
+	d := projection.New(config)
 
 	fmt.Println("Running one-time sync...")
 	if err := d.Sync(); err != nil {

@@ -61,17 +61,21 @@ type beadsEvent struct {
 
 // SyncDaemon handles periodic syncing from Beads to Mission Control projections.
 type SyncDaemon struct {
-	beadsDBPath   string
-	projDBPath    string
-	cacheDir      string
-	logger        *log.Logger
-	pollInterval  time.Duration
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mu            sync.RWMutex
-	lastSync      time.Time
-	syncCount     int
-	errorCount    int
+	beadsDBPath        string
+	projDBPath         string
+	cacheDir           string
+	logger             *log.Logger
+	pollInterval       time.Duration
+	ctx                context.Context
+	cancel             context.CancelFunc
+	mu                 sync.RWMutex
+	lastSync           time.Time
+	syncCount          int
+	errorCount         int
+	lastEventID        int64
+	lastTaskUpdate     int64
+	lastCommentSync    int64
+	incrementalEnabled bool
 }
 
 // Config holds the daemon configuration.
@@ -94,15 +98,33 @@ func New(cfg Config) *SyncDaemon {
 		cfg.Logger = log.New(os.Stderr, "[projection-sync] ", log.LstdFlags)
 	}
 
-	return &SyncDaemon{
-		beadsDBPath:  cfg.BeadsDBPath,
-		projDBPath:   cfg.ProjDBPath,
-		cacheDir:     cfg.CacheDir,
-		logger:       cfg.Logger,
-		pollInterval: cfg.PollInterval,
-		ctx:          ctx,
-		cancel:       cancel,
+	daemon := &SyncDaemon{
+		beadsDBPath:        cfg.BeadsDBPath,
+		projDBPath:         cfg.ProjDBPath,
+		cacheDir:           cfg.CacheDir,
+		logger:             cfg.Logger,
+		pollInterval:       cfg.PollInterval,
+		ctx:                ctx,
+		cancel:             cancel,
+		incrementalEnabled: false,
 	}
+
+	// Try to load persisted state for incremental sync
+	townRoot := cfg.CacheDir
+	for len(townRoot) > 0 && filepath.Base(townRoot) != "cache" {
+		townRoot = filepath.Dir(townRoot)
+	}
+	townRoot = filepath.Dir(townRoot)
+
+	if state, err := LoadState(townRoot); err == nil && state != nil {
+		daemon.lastEventID = state.LastEventID
+		daemon.lastTaskUpdate = state.LastTaskUpdate
+		daemon.lastCommentSync = state.LastCommentSync
+		daemon.incrementalEnabled = state.IncrementalSynced
+		daemon.logger.Printf("Loaded persisted state: lastEventID=%d, incrementalEnabled=%v", daemon.lastEventID, daemon.incrementalEnabled)
+	}
+
+	return daemon
 }
 
 // Run starts the sync daemon loop.
@@ -193,6 +215,12 @@ func (d *SyncDaemon) Sync() error {
 		return fmt.Errorf("beads database connection failed: %w", err)
 	}
 
+	// Verify Beads schema
+	if err := d.verifyBeadsSchema(beadsDB); err != nil {
+		d.logger.Printf("Warning: schema verification failed: %v", err)
+		// Non-fatal, continue with sync
+	}
+
 	// Ensure projection database directory exists
 	if err := os.MkdirAll(filepath.Dir(d.projDBPath), 0755); err != nil {
 		return fmt.Errorf("creating projection database directory: %w", err)
@@ -214,9 +242,21 @@ func (d *SyncDaemon) Sync() error {
 		return fmt.Errorf("projection database connection failed: %w", err)
 	}
 
-	// Sync tasks
-	if err := d.syncTasks(beadsDB, projDB); err != nil {
-		return fmt.Errorf("syncing tasks: %w", err)
+	// Sync tasks (incremental if possible)
+	if d.lastTaskUpdate > 0 && d.incrementalEnabled {
+		if err := d.syncTasksIncremental(beadsDB, projDB); err != nil {
+			d.logger.Printf("Incremental task sync failed, falling back to full sync: %v", err)
+			if err := d.syncTasks(beadsDB, projDB); err != nil {
+				return fmt.Errorf("syncing tasks: %w", err)
+			}
+		}
+	} else {
+		if err := d.syncTasks(beadsDB, projDB); err != nil {
+			return fmt.Errorf("syncing tasks: %w", err)
+		}
+		d.mu.Lock()
+		d.incrementalEnabled = true
+		d.mu.Unlock()
 	}
 
 	// Sync agents
@@ -224,9 +264,23 @@ func (d *SyncDaemon) Sync() error {
 		return fmt.Errorf("syncing agents: %w", err)
 	}
 
-	// Sync activity
-	if err := d.syncActivity(beadsDB, projDB); err != nil {
-		return fmt.Errorf("syncing activity: %w", err)
+	// Sync activity (incremental if possible)
+	if d.lastEventID > 0 && d.incrementalEnabled {
+		if err := d.syncActivityIncremental(beadsDB, projDB); err != nil {
+			d.logger.Printf("Incremental activity sync failed, falling back to full sync: %v", err)
+			if err := d.syncActivity(beadsDB, projDB); err != nil {
+				return fmt.Errorf("syncing activity: %w", err)
+			}
+		}
+	} else {
+		if err := d.syncActivity(beadsDB, projDB); err != nil {
+			return fmt.Errorf("syncing activity: %w", err)
+		}
+	}
+
+	// Sync comments
+	if err := d.syncComments(beadsDB, projDB); err != nil {
+		return fmt.Errorf("syncing comments: %w", err)
 	}
 
 	// Update state with mutex protection
@@ -257,7 +311,7 @@ func (d *SyncDaemon) syncTasks(beadsDB, projDB *sql.DB) error {
 	rows, err := beadsDB.Query(`
 		SELECT id, title, description, status, priority, issue_type,
 		       assignee, owner, created_at, updated_at, closed_at,
-		       external_ref, rig
+		       external_ref, rig, '' AS labels, '' AS epic, '' AS project
 		FROM issues
 		WHERE deleted_at IS NULL
 		ORDER BY updated_at DESC
@@ -474,6 +528,116 @@ func (d *SyncDaemon) syncActivity(beadsDB, projDB *sql.DB) error {
 	return nil
 }
 
+// syncComments syncs comments from Beads to the projection database.
+func (d *SyncDaemon) syncComments(beadsDB, projDB *sql.DB) error {
+	// Query comments from Beads
+	rows, err := beadsDB.Query(`
+		SELECT id, issue_id, author, text, created_at
+		FROM comments
+		ORDER BY created_at DESC
+		LIMIT 10000
+	`)
+	if err != nil {
+		// If comments table doesn't exist, log warning and continue (not critical)
+		d.logger.Printf("Warning: querying beads comments: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	type beadsComment struct {
+		ID        string
+		IssueID   string
+		Author    string
+		Text      string
+		CreatedAt time.Time
+	}
+
+	var comments []beadsComment
+	for rows.Next() {
+		var c beadsComment
+		err := rows.Scan(&c.ID, &c.IssueID, &c.Author, &c.Text, &c.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("scanning comment row: %w", err)
+		}
+		comments = append(comments, c)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating comment rows: %w", err)
+	}
+
+	// Begin transaction
+	tx, err := projDB.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Clear and rebuild task_comments table
+	if _, err := tx.Exec("DELETE FROM task_comments"); err != nil {
+		return fmt.Errorf("clearing comments: %w", err)
+	}
+
+	// Insert comments
+	for _, c := range comments {
+		_, err := tx.Exec(`
+			INSERT INTO task_comments (id, task_id, author, content, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`,
+			c.ID, c.IssueID, nullString(c.Author), c.Text, unixMillis(c.CreatedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("inserting comment %s: %w", c.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing comments: %w", err)
+	}
+
+	d.logger.Printf("Synced %d comments", len(comments))
+
+	return nil
+}
+
+// verifyBeadsSchema checks that Beads database has required tables and columns.
+func (d *SyncDaemon) verifyBeadsSchema(db *sql.DB) error {
+	// Define required tables and their columns
+	requiredTables := map[string][]string{
+		"issues": {"id", "title", "description", "status", "issue_type", "created_at", "updated_at", "deleted_at"},
+		"events": {"id", "issue_id", "event_type", "actor", "created_at"},
+		"comments": {"id", "issue_id", "author", "text", "created_at"},
+	}
+
+	for tableName, requiredCols := range requiredTables {
+		// Get columns for this table
+		rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+		if err != nil {
+			return fmt.Errorf("checking table %s: %w", tableName, err)
+		}
+		defer rows.Close()
+
+		columns := make(map[string]bool)
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, ctype string
+			var dfltValue sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+				return fmt.Errorf("scanning column info for %s: %w", tableName, err)
+			}
+			columns[name] = true
+		}
+
+		// Verify required columns exist
+		for _, col := range requiredCols {
+			if !columns[col] {
+				d.logger.Printf("Warning: table %s missing column %s", tableName, col)
+			}
+		}
+	}
+
+	return nil
+}
+
 // writeTasksJSON writes the tasks cache file in Mission Control format.
 func (d *SyncDaemon) writeTasksJSON(tasks interface{}) error {
 	cacheFile := filepath.Join(d.cacheDir, "tasks.json")
@@ -626,4 +790,232 @@ func buildActivityContent(e beadsEvent) string {
 	default:
 		return e.Type
 	}
+}
+
+// syncTasksIncremental performs an incremental task sync using Beads dirty_issues table.
+func (d *SyncDaemon) syncTasksIncremental(beadsDB, projDB *sql.DB) error {
+	startTime := time.Now()
+
+	// Check if dirty_issues table exists
+	var tableExists bool
+	err := beadsDB.QueryRow(`
+		SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirty_issues')
+	`).Scan(&tableExists)
+	if err != nil || !tableExists {
+		return fmt.Errorf("dirty_issues table not available, falling back to full sync")
+	}
+
+	// Query Beads for dirty (changed) issues
+	rows, err := beadsDB.Query(`
+		SELECT i.id, i.title, COALESCE(i.description, '') AS description,
+		       i.status, i.priority, i.issue_type,
+		       COALESCE(i.assignee, '') AS assignee, COALESCE(i.owner, '') AS owner,
+		       i.created_at, i.updated_at, i.closed_at,
+		       COALESCE(i.external_ref, '') AS external_ref,
+		       '' AS rig, '' AS labels, '' AS epic, '' AS project
+		FROM issues i
+		INNER JOIN dirty_issues d ON i.id = d.issue_id
+		WHERE i.deleted_at IS NULL
+		ORDER BY i.updated_at DESC
+	`)
+	if err != nil {
+		return fmt.Errorf("querying dirty issues: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []beadsTask
+	var maxUpdateTime int64
+	for rows.Next() {
+		var t beadsTask
+		err := rows.Scan(
+			&t.ID, &t.Title, &t.Desc, &t.Status, &t.Priority, &t.Type,
+			&t.Assignee, &t.Owner, &t.CreatedAt, &t.UpdatedAt, &t.ClosedAt,
+			&t.Labels, &t.External, &t.Rig, &t.Epic, &t.Project,
+		)
+		if err != nil {
+			return fmt.Errorf("scanning issue row: %w", err)
+		}
+		tasks = append(tasks, t)
+		
+		// Track maximum update time for next incremental sync
+		updateMs := t.UpdatedAt.UnixMilli()
+		if updateMs > maxUpdateTime {
+			maxUpdateTime = updateMs
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating issue rows: %w", err)
+	}
+
+	if len(tasks) == 0 {
+		d.logger.Printf("No dirty issues to sync (incremental)")
+		return nil
+	}
+
+	// Begin transaction
+	tx, err := projDB.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Update tasks (upsert pattern)
+	for _, t := range tasks {
+		hasComments := false
+		commentCount := 0
+
+		var labels string
+		if t.Labels != "" {
+			labels = t.Labels
+		}
+
+		external := t.External
+		if external == "" {
+			var metadata map[string]interface{}
+			if err := json.Unmarshal([]byte(t.Labels), &metadata); err == nil {
+				if ext, ok := metadata["external_ref"].(string); ok {
+					external = ext
+				}
+			}
+		}
+
+		// Upsert: insert or update task
+		_, err := tx.Exec(`
+			INSERT INTO tasks (
+				id, title, description, status, priority, issue_type,
+				assignee, owner, created_at, updated_at, closed_at,
+				labels, external_ref, rig, epic, project,
+				has_comments, comment_count, has_artifacts, has_hooks,
+				source_repo, indexed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				title=excluded.title,
+				description=excluded.description,
+				status=excluded.status,
+				priority=excluded.priority,
+				issue_type=excluded.issue_type,
+				assignee=excluded.assignee,
+				owner=excluded.owner,
+				updated_at=excluded.updated_at,
+				closed_at=excluded.closed_at,
+				indexed_at=excluded.indexed_at
+		`,
+			t.ID, t.Title, t.Desc, t.Status, t.Priority, t.Type,
+			nullString(t.Assignee), nullString(t.Owner),
+			unixMillis(t.CreatedAt), unixMillis(t.UpdatedAt),
+			nullTime(t.ClosedAt),
+			labels, nullString(external), nullString(t.Rig),
+			nullString(t.Epic), nullString(t.Project),
+			hasComments, commentCount, false, false,
+			".", time.Now().UnixMilli(),
+		)
+		if err != nil {
+			return fmt.Errorf("upserting task %s: %w", t.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing tasks: %w", err)
+	}
+
+	// Clear dirty_issues table after successful sync
+	if _, err := beadsDB.Exec("DELETE FROM dirty_issues"); err != nil {
+		d.logger.Printf("Warning: failed to clear dirty_issues: %v", err)
+	}
+
+	// Update tracking state
+	d.mu.Lock()
+	d.lastTaskUpdate = maxUpdateTime
+	d.mu.Unlock()
+
+	duration := time.Since(startTime)
+	d.logger.Printf("Incremental task sync completed in %v (synced %d dirty tasks)", duration, len(tasks))
+
+	return nil
+}
+
+// syncActivityIncremental performs an incremental activity sync using event ID tracking.
+func (d *SyncDaemon) syncActivityIncremental(beadsDB, projDB *sql.DB) error {
+	startTime := time.Now()
+
+	// Query events after lastEventID
+	rows, err := beadsDB.Query(`
+		SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at
+		FROM events
+		WHERE id > ?
+		ORDER BY id ASC
+		LIMIT 10000
+	`, d.lastEventID)
+	if err != nil {
+		return fmt.Errorf("querying beads events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []beadsEvent
+	var maxEventID int64
+	for rows.Next() {
+		var e beadsEvent
+		err := rows.Scan(
+			&e.ID, &e.IssueID, &e.Type, &e.Actor,
+			&e.OldValue, &e.NewValue, &e.Comment, &e.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("scanning event row: %w", err)
+		}
+		events = append(events, e)
+		
+		// Track maximum event ID for next incremental sync
+		if e.ID > maxEventID {
+			maxEventID = e.ID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating event rows: %w", err)
+	}
+
+	if len(events) == 0 {
+		d.logger.Printf("No new events to sync (last event ID: %d)", d.lastEventID)
+		return nil
+	}
+
+	// Begin transaction
+	tx, err := projDB.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Append activities (don't clear, append only)
+	for _, e := range events {
+		activityType := mapEventToActivity(e.Type)
+		content := buildActivityContent(e)
+		agentID := e.Actor
+		if strings.HasPrefix(e.IssueID, "oc-") || strings.HasPrefix(e.IssueID, "gt-") {
+			agentID = e.Actor
+		}
+
+		_, err := tx.Exec(`
+			INSERT INTO activities (type, agent_id, task_id, content, timestamp)
+			VALUES (?, ?, ?, ?, ?)
+		`,
+			activityType, agentID, e.IssueID, content, unixMillis(e.CreatedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("inserting activity %d: %w", e.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing activities: %w", err)
+	}
+
+	// Update tracking state
+	d.mu.Lock()
+	d.lastEventID = maxEventID
+	d.mu.Unlock()
+
+	duration := time.Since(startTime)
+	d.logger.Printf("Incremental activity sync completed in %v (synced %d events, last event ID: %d)", duration, len(events), maxEventID)
+
+	return nil
 }

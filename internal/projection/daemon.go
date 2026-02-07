@@ -13,12 +13,16 @@ import (
 
 // State represents the daemon's persistent state.
 type State struct {
-	Running    bool      `json:"running"`
-	PID        int       `json:"pid"`
-	StartedAt  time.Time `json:"started_at"`
-	LastSync   time.Time `json:"last_sync"`
-	SyncCount  int       `json:"sync_count"`
-	ErrorCount int       `json:"error_count"`
+	Running           bool      `json:"running"`
+	PID               int       `json:"pid"`
+	StartedAt         time.Time `json:"started_at"`
+	LastSync          time.Time `json:"last_sync"`
+	SyncCount         int       `json:"sync_count"`
+	ErrorCount        int       `json:"error_count"`
+	LastEventID       int64     `json:"last_event_id,omitempty"`
+	LastTaskUpdate    int64     `json:"last_task_update_ms,omitempty"`
+	LastCommentSync   int64     `json:"last_comment_sync_ms,omitempty"`
+	IncrementalSynced bool      `json:"incremental_synced,omitempty"`
 }
 
 var (
@@ -133,12 +137,16 @@ func (d *SyncDaemon) SaveState() error {
 
 	d.mu.RLock()
 	state := State{
-		Running:    true,
-		PID:        os.Getpid(),
-		StartedAt:  time.Now(), // Simplified - should track actual start time
-		LastSync:   d.lastSync,
-		SyncCount:  d.syncCount,
-		ErrorCount: d.errorCount,
+		Running:           true,
+		PID:               os.Getpid(),
+		StartedAt:         time.Now(), // Simplified - should track actual start time
+		LastSync:          d.lastSync,
+		SyncCount:         d.syncCount,
+		ErrorCount:        d.errorCount,
+		LastEventID:       d.lastEventID,
+		LastTaskUpdate:    d.lastTaskUpdate,
+		LastCommentSync:   d.lastCommentSync,
+		IncrementalSynced: d.incrementalEnabled,
 	}
 	d.mu.RUnlock()
 
