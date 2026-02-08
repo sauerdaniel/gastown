@@ -216,6 +216,10 @@ func (m *Manager) createAgentBeadWithRetry(agentID string, fields *beads.AgentFi
 }
 
 // SetAgentStateWithRetry wraps SetAgentState with retry logic.
+// Returns an error after exhausting retries, but callers may choose to warn
+// rather than fail — e.g., in StartSession where the tmux session is already
+// running and failing hard would orphan it. Agent state is a monitoring
+// concern, not a correctness requirement.
 func (m *Manager) SetAgentStateWithRetry(name string, state string) error {
 	var lastErr error
 	for attempt := 1; attempt <= doltMaxRetries; attempt++ {

@@ -241,14 +241,20 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 		fmt.Printf("Warning: runtime may not be fully ready: %v\n", err)
 	}
 
-	// Update agent state with retry logic (gt-94llt7: fail-safe Dolt writes)
+	// Update agent state with retry logic (gt-94llt7: fail-safe Dolt writes).
+	// Note: warn-only, not fail-hard. The tmux session is already started above,
+	// so returning an error here would leave an orphaned session with no cleanup path.
+	// The polecat can still function without the agent state update — it only affects
+	// monitoring visibility, not correctness. Compare with createAgentBeadWithRetry
+	// which fails hard because a polecat without an agent bead is untrackable.
 	polecatGit := git.NewGit(r.Path)
 	polecatMgr := polecat.NewManager(r, polecatGit, t)
 	if err := polecatMgr.SetAgentStateWithRetry(s.PolecatName, "working"); err != nil {
 		fmt.Printf("Warning: could not update agent state after retries: %v\n", err)
 	}
 
-	// Update issue status from hooked to in_progress
+	// Update issue status from hooked to in_progress.
+	// Also warn-only for the same reason: session is already running.
 	if err := polecatMgr.SetState(s.PolecatName, polecat.StateWorking); err != nil {
 		fmt.Printf("Warning: could not update issue status to in_progress: %v\n", err)
 	}
