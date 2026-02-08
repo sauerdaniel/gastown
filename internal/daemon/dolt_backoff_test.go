@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -249,5 +251,68 @@ func TestRestartingFlag_PreventsConcurrentRestarts(t *testing.T) {
 	// All 5 should have returned nil (skipped because restarting=true)
 	if got := callCount.Load(); got != 5 {
 		t.Errorf("expected all 5 goroutines to return nil (skipped), got %d", got)
+	}
+}
+
+func TestWriteAndClearUnhealthySignal(t *testing.T) {
+	tmpDir := t.TempDir()
+	daemonDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &DoltServerManager{
+		config:   DefaultDoltServerConfig(tmpDir),
+		townRoot: tmpDir,
+		logger:   func(format string, v ...interface{}) {},
+	}
+
+	// Initially no signal
+	if IsDoltUnhealthy(tmpDir) {
+		t.Error("expected no unhealthy signal initially")
+	}
+
+	// Write signal
+	m.writeUnhealthySignal("server_dead", "PID 12345 is dead")
+
+	if !IsDoltUnhealthy(tmpDir) {
+		t.Error("expected unhealthy signal after write")
+	}
+
+	// Verify signal file contains JSON
+	data, err := os.ReadFile(m.unhealthySignalFile())
+	if err != nil {
+		t.Fatalf("failed to read signal file: %v", err)
+	}
+	content := string(data)
+	if content == "" {
+		t.Error("signal file should not be empty")
+	}
+
+	// Clear signal
+	m.clearUnhealthySignal()
+
+	if IsDoltUnhealthy(tmpDir) {
+		t.Error("expected no unhealthy signal after clear")
+	}
+}
+
+func TestUnhealthySignalFile_Path(t *testing.T) {
+	m := &DoltServerManager{
+		config:   DefaultDoltServerConfig("/tmp/test-town"),
+		townRoot: "/tmp/test-town",
+		logger:   func(format string, v ...interface{}) {},
+	}
+
+	expected := "/tmp/test-town/daemon/DOLT_UNHEALTHY"
+	if got := m.unhealthySignalFile(); got != expected {
+		t.Errorf("expected %s, got %s", expected, got)
+	}
+}
+
+func TestIsDoltUnhealthy_NoDir(t *testing.T) {
+	// Non-existent directory should return false
+	if IsDoltUnhealthy("/nonexistent/path") {
+		t.Error("expected false for non-existent directory")
 	}
 }

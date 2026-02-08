@@ -252,10 +252,13 @@ func (m *DoltServerManager) EnsureRunning() error {
 		m.lastCheck = time.Now()
 		if err := m.checkHealthLocked(); err != nil {
 			m.logger("Dolt server unhealthy: %v, restarting...", err)
+			m.sendUnhealthyAlert(err)
+			m.writeUnhealthySignal("health_check_failed", err.Error())
 			m.stopLocked()
 			return m.restartWithBackoff()
 		}
-		// Server is healthy — reset backoff if it's been healthy long enough
+		// Server is healthy — clear any stale unhealthy signal and reset backoff
+		m.clearUnhealthySignal()
 		m.maybeResetBackoff()
 		return nil
 	}
@@ -263,6 +266,8 @@ func (m *DoltServerManager) EnsureRunning() error {
 	// Not running, start it
 	if pid > 0 {
 		m.logger("Dolt server PID %d is dead, cleaning up and restarting...", pid)
+		m.sendCrashAlert(pid)
+		m.writeUnhealthySignal("server_dead", fmt.Sprintf("PID %d is dead", pid))
 	}
 	return m.restartWithBackoff()
 }
@@ -427,7 +432,125 @@ Action needed: Investigate and fix the root cause, then restart the daemon or th
 		} else {
 			logger("Sent escalation mail to mayor about Dolt server crash-loop")
 		}
+
+		// Also notify all witnesses so they can react to degraded Dolt state
+		sendDoltAlertToWitnesses(townRoot, subject, body, logger)
 	}()
+}
+
+// sendCrashAlert sends a mail to the mayor when the Dolt server is found dead.
+// This is for single crash detection — distinct from crash-loop escalation.
+// Runs asynchronously to avoid blocking.
+func (m *DoltServerManager) sendCrashAlert(deadPID int) {
+	subject := "ALERT: Dolt server crashed"
+	body := fmt.Sprintf(`The Dolt server (PID %d) was found dead. The daemon is restarting it.
+
+Data dir: %s
+Log file: %s
+Host: %s:%d
+
+Check the log file for crash details. If crashes recur, the daemon will escalate after %d restarts in %v.`,
+		deadPID,
+		m.config.DataDir, m.config.LogFile,
+		m.config.Host, m.config.Port,
+		m.config.MaxRestartsInWindow, m.config.RestartWindow)
+
+	townRoot := m.townRoot
+	logger := m.logger
+
+	go func() {
+		sendDoltAlertMail(townRoot, "mayor/", subject, body, logger)
+		sendDoltAlertToWitnesses(townRoot, subject, body, logger)
+	}()
+}
+
+// sendUnhealthyAlert sends a mail to the mayor when the Dolt server fails health checks.
+// The server is running but not responding to queries. Runs asynchronously.
+func (m *DoltServerManager) sendUnhealthyAlert(healthErr error) {
+	subject := "ALERT: Dolt server unhealthy"
+	body := fmt.Sprintf(`The Dolt server is running but failing health checks. The daemon is restarting it.
+
+Health check error: %v
+
+Data dir: %s
+Log file: %s
+Host: %s:%d
+
+This may indicate high load, connection exhaustion, or internal server errors.`,
+		healthErr,
+		m.config.DataDir, m.config.LogFile,
+		m.config.Host, m.config.Port)
+
+	townRoot := m.townRoot
+	logger := m.logger
+
+	go func() {
+		sendDoltAlertMail(townRoot, "mayor/", subject, body, logger)
+		sendDoltAlertToWitnesses(townRoot, subject, body, logger)
+	}()
+}
+
+// sendDoltAlertMail sends a Dolt alert mail to a specific recipient.
+func sendDoltAlertMail(townRoot, recipient, subject, body string, logger func(format string, v ...interface{})) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gt", "mail", "send", recipient, "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
+	cmd.Dir = townRoot
+	cmd.Env = os.Environ()
+
+	if err := cmd.Run(); err != nil {
+		logger("Warning: failed to send Dolt alert to %s: %v", recipient, err)
+	}
+}
+
+// sendDoltAlertToWitnesses sends a Dolt alert to all rig witnesses.
+// Discovers rigs from mayor/rigs.json and sends to each <rig>/witness.
+func sendDoltAlertToWitnesses(townRoot, subject, body string, logger func(format string, v ...interface{})) {
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	data, err := os.ReadFile(rigsPath)
+	if err != nil {
+		return // No rigs.json, nothing to notify
+	}
+
+	var parsed struct {
+		Rigs map[string]interface{} `json:"rigs"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return
+	}
+
+	for rigName := range parsed.Rigs {
+		recipient := rigName + "/witness"
+		sendDoltAlertMail(townRoot, recipient, subject, body, logger)
+	}
+}
+
+// unhealthySignalFile returns the path to the DOLT_UNHEALTHY signal file.
+// Witness patrols can check for this file to detect degraded Dolt state.
+func (m *DoltServerManager) unhealthySignalFile() string {
+	return filepath.Join(m.townRoot, "daemon", "DOLT_UNHEALTHY")
+}
+
+// writeUnhealthySignal writes the DOLT_UNHEALTHY signal file.
+// This file signals to witness patrols that the Dolt server is degraded.
+func (m *DoltServerManager) writeUnhealthySignal(reason, detail string) {
+	payload := fmt.Sprintf(`{"reason":%q,"detail":%q,"timestamp":%q}`,
+		reason, detail, time.Now().UTC().Format(time.RFC3339))
+	if err := os.WriteFile(m.unhealthySignalFile(), []byte(payload), 0644); err != nil {
+		m.logger("Warning: failed to write DOLT_UNHEALTHY signal: %v", err)
+	}
+}
+
+// clearUnhealthySignal removes the DOLT_UNHEALTHY signal file when the server is healthy.
+func (m *DoltServerManager) clearUnhealthySignal() {
+	_ = os.Remove(m.unhealthySignalFile())
+}
+
+// IsDoltUnhealthy checks if the DOLT_UNHEALTHY signal file exists.
+// This is a package-level function for use by witness patrols and other consumers.
+func IsDoltUnhealthy(townRoot string) bool {
+	_, err := os.Stat(filepath.Join(townRoot, "daemon", "DOLT_UNHEALTHY"))
+	return err == nil
 }
 
 // Start starts the Dolt SQL server.
