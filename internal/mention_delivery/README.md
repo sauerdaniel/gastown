@@ -44,14 +44,16 @@ The worker performs three main functions:
 
 ## Current Status
 
-### ✅ Implemented
+### ✅ Implemented (POC Complete)
 
-- [x] Database connection to Beads
-- [x] Event polling loop (10-second interval)
-- [x] Last event ID tracking (resume from where we left off)
-- [x] @mention regex parsing
-- [x] Basic notification message formatting
-- [x] OpenClaw CLI command construction
+- [x] Database connection to beads.db (events & subscriptions tables)
+- [x] Event polling loop (10s interval, incremental via lastEventID)
+- [x] @mention detection & parsing in comments (`@username`)
+- [x] Bead-level subscription matching (sub_type='bead')
+- [x] Delivery prefs lookup per subscriber
+- [x] Actual OpenClaw `message send` execution (not stub)
+- [x] Graceful shutdown (SIGINT/SIGTERM via context)
+- [x] Basic error logging
 
 ### ⚠️ Partially Implemented
 
@@ -60,15 +62,17 @@ The worker performs three main functions:
 - [ ] **Error handling** - Missing retry logic and failure handling
 - [ ] **Graceful shutdown** - No signal handling for clean exit
 
-### ❌ Not Yet Implemented
+### Next Steps (Production Polish)
 
-- [ ] **Subscription persistence** - Need to store subscription state
-- [ ] **Delivery tracking** - Don't track which notifications were sent
-- [ ] **Rate limiting** - Could spam users if many mentions occur
-- [ ] **Batching** - Each mention sends immediately, no aggregation
-- [ ] **User preferences** - No way for users to configure notification settings
-- [ ] **Delivery status** - No feedback on whether notification was delivered
-- [ ] **Daemon lifecycle** - No start/stop/status commands (runs as main())
+**High Priority:**
+- [ ] bd CLI: `bd subscribe/unsubscribe bead/label/convoy <id> [channel target]`
+- [ ] Expand subscription matching: labels, convoys, assignees
+- [ ] Integrate into Gas Town daemon (gt mention-worker start/stop)
+- [ ] Add unit/integration tests
+- [ ] Retry logic & exponential backoff for failed deliveries
+- [ ] Rate limiting & deduplication
+- [ ] Config from ENV (BEADS_DB_PATH, OPENCLAW_CLI, POLL_INTERVAL)
+- [ ] Structured logging & metrics
 
 ## How to Use
 
