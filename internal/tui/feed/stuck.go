@@ -221,8 +221,9 @@ func (d *StuckDetector) analyzeAgent(id string, issue *beads.Issue) *ProblemAgen
 	}
 
 	// 1. Zombie check (tmux liveness)
-	alive, _ := d.source.IsSessionAlive(sessionName)
-	if !alive {
+	// On error, treat session as alive (unknown) rather than falsely flagging as zombie
+	alive, err := d.source.IsSessionAlive(sessionName)
+	if err == nil && !alive {
 		agent.State = StateZombie
 		agent.ActionHint = "Session dead - may need restart"
 		return agent
@@ -261,6 +262,8 @@ func IsGUPPViolation(hasHookedWork bool, minutesSinceProgress int) bool {
 
 // deriveSessionName maps bead ID components to a tmux session name.
 // Uses the naming conventions from internal/session/.
+// Note: session.*SessionName functions take a rigPrefix (e.g. "gt"),
+// not a rig name (e.g. "gastown"). Use session.PrefixFor(rig) to convert.
 func deriveSessionName(rig, role, name string) string {
 	switch role {
 	case "mayor":
@@ -268,22 +271,23 @@ func deriveSessionName(rig, role, name string) string {
 	case "deacon":
 		return session.DeaconSessionName()
 	case "witness":
-		return session.WitnessSessionName(rig)
+		return session.WitnessSessionName(session.PrefixFor(rig))
 	case "refinery":
-		return session.RefinerySessionName(rig)
+		return session.RefinerySessionName(session.PrefixFor(rig))
 	case "crew":
-		return session.CrewSessionName(rig, name)
+		return session.CrewSessionName(session.PrefixFor(rig), name)
 	case "polecat":
-		return session.PolecatSessionName(rig, name)
+		return session.PolecatSessionName(session.PrefixFor(rig), name)
 	default:
 		// Fallback: construct from components
+		rigPrefix := session.PrefixFor(rig)
 		if rig == "" {
 			return session.HQPrefix + role
 		}
 		if name == "" {
-			return session.Prefix + rig + "-" + role
+			return rigPrefix + "-" + role
 		}
-		return session.Prefix + rig + "-" + role + "-" + name
+		return rigPrefix + "-" + role + "-" + name
 	}
 }
 

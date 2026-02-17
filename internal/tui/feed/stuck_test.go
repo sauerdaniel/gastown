@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,9 +10,10 @@ import (
 
 // mockHealthSource is a test double for HealthDataSource
 type mockHealthSource struct {
-	agents   map[string]*beads.Issue
-	sessions map[string]bool
-	listErr  error
+	agents     map[string]*beads.Issue
+	sessions   map[string]bool
+	listErr    error
+	sessionErr error // if set, IsSessionAlive returns this error
 }
 
 func newMockHealthSource() *mockHealthSource {
@@ -29,6 +31,9 @@ func (m *mockHealthSource) ListAgentBeads() (map[string]*beads.Issue, error) {
 }
 
 func (m *mockHealthSource) IsSessionAlive(sessionName string) (bool, error) {
+	if m.sessionErr != nil {
+		return false, m.sessionErr
+	}
 	return m.sessions[sessionName], nil
 }
 
@@ -241,7 +246,7 @@ func TestCheckAll_GUPPViolation(t *testing.T) {
 		HookBead:  "gt-abc12",
 		UpdatedAt: time.Now().Add(-45 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Toast"] = true // session alive
+	mock.sessions["gt-Toast"] = true // session alive
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -271,7 +276,7 @@ func TestCheckAll_Stalled(t *testing.T) {
 		HookBead:  "gt-def34",
 		UpdatedAt: time.Now().Add(-20 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Pearl"] = true
+	mock.sessions["gt-Pearl"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -295,7 +300,7 @@ func TestCheckAll_Working(t *testing.T) {
 		HookBead:  "gt-xyz89",
 		UpdatedAt: time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Max"] = true
+	mock.sessions["gt-Max"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -319,7 +324,7 @@ func TestCheckAll_Idle(t *testing.T) {
 		HookBead:  "", // no hooked work
 		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Joe"] = true
+	mock.sessions["gt-Joe"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -370,7 +375,7 @@ func TestCheckAll_MultipleAgents(t *testing.T) {
 		HookBead:  "gt-work1",
 		UpdatedAt: now.Add(-40 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Stuck"] = true
+	mock.sessions["gt-Stuck"] = true
 
 	// Working agent
 	mock.agents["gt-gastown-polecat-Happy"] = &beads.Issue{
@@ -378,7 +383,7 @@ func TestCheckAll_MultipleAgents(t *testing.T) {
 		HookBead:  "gt-work2",
 		UpdatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Happy"] = true
+	mock.sessions["gt-Happy"] = true
 
 	// Idle agent
 	mock.agents["gt-gastown-polecat-Lazy"] = &beads.Issue{
@@ -386,7 +391,7 @@ func TestCheckAll_MultipleAgents(t *testing.T) {
 		HookBead:  "",
 		UpdatedAt: now.Add(-5 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-Lazy"] = true
+	mock.sessions["gt-Lazy"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -475,7 +480,7 @@ func TestCheckAll_RigSingleton(t *testing.T) {
 		HookBead:  "",
 		UpdatedAt: time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-witness"] = true
+	mock.sessions["gt-witness"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -492,8 +497,8 @@ func TestCheckAll_RigSingleton(t *testing.T) {
 	if agents[0].Rig != "gastown" {
 		t.Errorf("expected rig 'gastown', got %q", agents[0].Rig)
 	}
-	if agents[0].SessionID != "gt-gastown-witness" {
-		t.Errorf("expected session 'gt-gastown-witness', got %q", agents[0].SessionID)
+	if agents[0].SessionID != "gt-witness" {
+		t.Errorf("expected session 'gt-witness', got %q", agents[0].SessionID)
 	}
 }
 
@@ -505,7 +510,7 @@ func TestCheckAll_CrewAgent(t *testing.T) {
 		HookBead:  "gt-task1",
 		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 	}
-	mock.sessions["gt-gastown-crew-joe"] = true
+	mock.sessions["gt-crew-joe"] = true
 
 	detector := NewStuckDetectorWithSource(mock)
 	agents, err := detector.CheckAll()
@@ -519,8 +524,8 @@ func TestCheckAll_CrewAgent(t *testing.T) {
 	if agents[0].Role != "crew" {
 		t.Errorf("expected role 'crew', got %q", agents[0].Role)
 	}
-	if agents[0].SessionID != "gt-gastown-crew-joe" {
-		t.Errorf("expected session 'gt-gastown-crew-joe', got %q", agents[0].SessionID)
+	if agents[0].SessionID != "gt-crew-joe" {
+		t.Errorf("expected session 'gt-crew-joe', got %q", agents[0].SessionID)
 	}
 	if agents[0].State != StateWorking {
 		t.Errorf("expected StateWorking, got %s", agents[0].State)
@@ -538,10 +543,10 @@ func TestDeriveSessionName(t *testing.T) {
 	}{
 		{"mayor", "", "mayor", "", "hq-mayor"},
 		{"deacon", "", "deacon", "", "hq-deacon"},
-		{"witness", "gastown", "witness", "", "gt-gastown-witness"},
-		{"refinery", "gastown", "refinery", "", "gt-gastown-refinery"},
-		{"crew", "gastown", "crew", "joe", "gt-gastown-crew-joe"},
-		{"polecat", "gastown", "polecat", "Toast", "gt-gastown-Toast"},
+		{"witness", "gastown", "witness", "", "gt-witness"},
+		{"refinery", "gastown", "refinery", "", "gt-refinery"},
+		{"crew", "gastown", "crew", "joe", "gt-crew-joe"},
+		{"polecat", "gastown", "polecat", "Toast", "gt-Toast"},
 	}
 
 	for _, tt := range tests {
@@ -573,5 +578,88 @@ func TestCheckAll_InvalidBeadID(t *testing.T) {
 	// "invalid-id" has prefix "invalid" which is > 3 chars, so ParseAgentBeadID will return false
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents for invalid bead ID, got %d", len(agents))
+	}
+}
+
+// TestCheckAll_SessionError tests that IsSessionAlive errors don't cause false zombies
+func TestCheckAll_SessionError(t *testing.T) {
+	mock := newMockHealthSource()
+	mock.agents["gt-gastown-polecat-Alpha"] = &beads.Issue{
+		ID:        "gt-gastown-polecat-Alpha",
+		HookBead:  "gt-work1",
+		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+	}
+	// Session error (e.g., tmux socket contention) - should NOT mark as zombie
+	mock.sessionErr = fmt.Errorf("tmux: socket not found")
+
+	detector := NewStuckDetectorWithSource(mock)
+	agents, err := detector.CheckAll()
+	if err != nil {
+		t.Fatalf("CheckAll: %v", err)
+	}
+
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].State == StateZombie {
+		t.Errorf("agent should NOT be zombie when IsSessionAlive returns error, got %s", agents[0].State)
+	}
+	// Should be Working (has hook, 5 min idle < 15 min stalled threshold)
+	if agents[0].State != StateWorking {
+		t.Errorf("expected StateWorking, got %s", agents[0].State)
+	}
+}
+
+// TestNudgeTarget tests the nudge target format for all agent types
+func TestNudgeTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    *ProblemAgent
+		expected string
+	}{
+		{
+			name:     "mayor",
+			agent:    &ProblemAgent{Role: "mayor", Name: "mayor", Rig: ""},
+			expected: "mayor",
+		},
+		{
+			name:     "deacon",
+			agent:    &ProblemAgent{Role: "deacon", Name: "deacon", Rig: ""},
+			expected: "deacon",
+		},
+		{
+			name:     "witness",
+			agent:    &ProblemAgent{Role: "witness", Name: "witness", Rig: "gastown"},
+			expected: "gastown/witness",
+		},
+		{
+			name:     "refinery",
+			agent:    &ProblemAgent{Role: "refinery", Name: "refinery", Rig: "gastown"},
+			expected: "gastown/refinery",
+		},
+		{
+			name:     "crew",
+			agent:    &ProblemAgent{Role: "crew", Name: "joe", Rig: "gastown"},
+			expected: "gastown/crew/joe",
+		},
+		{
+			name:     "polecat",
+			agent:    &ProblemAgent{Role: "polecat", Name: "Toast", Rig: "gastown"},
+			expected: "gastown/Toast",
+		},
+		{
+			name:     "unknown role falls back to session ID",
+			agent:    &ProblemAgent{Role: "custom", Name: "x", Rig: "r", SessionID: "gt-r-custom-x"},
+			expected: "gt-r-custom-x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nudgeTarget(tt.agent)
+			if got != tt.expected {
+				t.Errorf("nudgeTarget() = %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }

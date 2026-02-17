@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -98,9 +99,11 @@ type Model struct {
 	// Problems view state
 	problemAgents     []*ProblemAgent
 	selectedProblem   int
+	selectedBeadID    string // stable selection tracking by bead ID
 	problemsViewport  viewport.Model
 	stuckDetector     *StuckDetector
 	lastProblemsCheck time.Time
+	problemsError     error // last error from problems fetch
 
 	// Event source
 	eventChan <-chan Event
@@ -109,9 +112,10 @@ type Model struct {
 
 	// mu protects all fields read by View() from concurrent access:
 	// events, rigs, convoyState, eventChan, townRoot, width, height,
-	// focusedPanel, showHelp, help, filter, and the three viewports.
-	// Write lock is held during Update/handleKey mutations; read lock
-	// is held during View/render.
+	// focusedPanel, showHelp, help, filter, viewMode, problemAgents,
+	// selectedProblem, selectedBeadID, problemsError, lastProblemsCheck,
+	// and all viewports. Write lock is held during Update/handleKey
+	// mutations; read lock is held during View/render.
 	mu sync.RWMutex
 }
 
@@ -179,8 +183,13 @@ type convoyUpdateMsg struct {
 
 // problemsUpdateMsg is sent when problems data is refreshed
 type problemsUpdateMsg struct {
-	agents []*ProblemAgent
+	agents  []*ProblemAgent
+	fetched bool // true when data was fetched (even if agents is empty/nil)
+	err     error
 }
+
+// problemsTickMsg is sent to trigger the next problems refresh
+type problemsTickMsg struct{}
 
 // tickMsg is sent periodically to refresh the view
 type tickMsg time.Time
@@ -245,16 +254,16 @@ func (m *Model) fetchProblems() tea.Cmd {
 	return func() tea.Msg {
 		agents, err := detector.CheckAll()
 		if err != nil {
-			return problemsUpdateMsg{agents: nil}
+			return problemsUpdateMsg{fetched: true, err: err}
 		}
-		return problemsUpdateMsg{agents: agents}
+		return problemsUpdateMsg{agents: agents, fetched: true}
 	}
 }
 
 // problemsRefreshTick returns a command that schedules the next problems refresh
 func (m *Model) problemsRefreshTick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-		return problemsUpdateMsg{} // Empty triggers refresh
+		return problemsTickMsg{}
 	})
 }
 
@@ -291,26 +300,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case problemsUpdateMsg:
-		if msg.agents != nil {
-			// Fresh data arrived - update state and schedule next tick
-			m.problemAgents = msg.agents
-			m.lastProblemsCheck = time.Now()
-			// Keep selection in bounds
-			if m.selectedProblem >= len(m.problemAgents) {
-				m.selectedProblem = len(m.problemAgents) - 1
-			}
-			if m.selectedProblem < 0 {
-				m.selectedProblem = 0
-			}
-			m.updateViewContent()
-			if m.viewMode == ViewProblems {
+		if msg.err != nil {
+			// Error fetching problems - record error, schedule delayed retry
+			m.mu.Lock()
+			m.problemsError = msg.err
+			m.updateViewContentLocked()
+			scheduleNext := m.viewMode == ViewProblems
+			m.mu.Unlock()
+			if scheduleNext {
 				cmds = append(cmds, m.problemsRefreshTick())
 			}
-		} else {
-			// Tick fired - fetch new data if in problems view
-			if m.viewMode == ViewProblems {
-				cmds = append(cmds, m.fetchProblems())
+		} else if msg.fetched {
+			// Fresh data arrived - update state and schedule next tick
+			m.mu.Lock()
+			m.problemAgents = msg.agents
+			m.problemsError = nil
+			m.lastProblemsCheck = time.Now()
+			// Restore selection by bead ID for stability across refreshes
+			m.restoreSelectionByBeadID()
+			m.updateViewContentLocked()
+			scheduleNext := m.viewMode == ViewProblems
+			m.mu.Unlock()
+			if scheduleNext {
+				cmds = append(cmds, m.problemsRefreshTick())
 			}
+		}
+
+	case problemsTickMsg:
+		// Timer tick - fetch new data if in problems view
+		m.mu.RLock()
+		inProblems := m.viewMode == ViewProblems
+		m.mu.RUnlock()
+		if inProblems {
+			cmds = append(cmds, m.fetchProblems())
 		}
 
 	case tickMsg:
@@ -432,17 +454,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // toggleProblemsView switches between activity and problems view
 func (m *Model) toggleProblemsView() (tea.Model, tea.Cmd) {
+	m.mu.Lock()
 	if m.viewMode == ViewProblems {
 		m.viewMode = ViewActivity
 		m.focusedPanel = PanelTree
+		m.mu.Unlock()
 		m.updateViewportSizes()
 		return m, nil
 	}
 	m.viewMode = ViewProblems
 	m.focusedPanel = PanelProblems
+	lastCheck := m.lastProblemsCheck
+	m.mu.Unlock()
 	m.updateViewportSizes()
 	// Fetch problems if we haven't recently
-	if time.Since(m.lastProblemsCheck) > 5*time.Second {
+	if time.Since(lastCheck) > 5*time.Second {
 		return m, m.fetchProblems()
 	}
 	return m, nil
@@ -468,12 +494,47 @@ func (m *Model) handleTabKey() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// restoreSelectionByBeadID finds the previously-selected agent by bead ID
+// after a data refresh and updates the index. Falls back to clamping if not found.
+func (m *Model) restoreSelectionByBeadID() {
+	if m.selectedBeadID != "" {
+		idx := 0
+		for _, agent := range m.problemAgents {
+			if agent.State.NeedsAttention() {
+				if agent.CurrentBeadID == m.selectedBeadID {
+					m.selectedProblem = idx
+					return
+				}
+				idx++
+			}
+		}
+	}
+	// Not found or no previous selection - clamp to bounds
+	problemCount := 0
+	for _, agent := range m.problemAgents {
+		if agent.State.NeedsAttention() {
+			problemCount++
+		}
+	}
+	if m.selectedProblem >= problemCount {
+		m.selectedProblem = problemCount - 1
+	}
+	if m.selectedProblem < 0 {
+		m.selectedProblem = 0
+	}
+	// Update tracked bead ID
+	if selected := m.getSelectedProblemAgent(); selected != nil {
+		m.selectedBeadID = selected.CurrentBeadID
+	}
+}
+
 // selectNextProblem moves selection to next problem agent
 func (m *Model) selectNextProblem() (tea.Model, tea.Cmd) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if len(m.problemAgents) == 0 {
 		return m, nil
 	}
-	// Count problem agents
 	problemCount := 0
 	for _, agent := range m.problemAgents {
 		if agent.State.NeedsAttention() {
@@ -487,16 +548,20 @@ func (m *Model) selectNextProblem() (tea.Model, tea.Cmd) {
 	if m.selectedProblem >= problemCount {
 		m.selectedProblem = 0
 	}
-	m.updateViewContent()
+	if selected := m.getSelectedProblemAgent(); selected != nil {
+		m.selectedBeadID = selected.CurrentBeadID
+	}
+	m.updateViewContentLocked()
 	return m, nil
 }
 
 // selectPrevProblem moves selection to previous problem agent
 func (m *Model) selectPrevProblem() (tea.Model, tea.Cmd) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if len(m.problemAgents) == 0 {
 		return m, nil
 	}
-	// Count problem agents
 	problemCount := 0
 	for _, agent := range m.problemAgents {
 		if agent.State.NeedsAttention() {
@@ -510,7 +575,10 @@ func (m *Model) selectPrevProblem() (tea.Model, tea.Cmd) {
 	if m.selectedProblem < 0 {
 		m.selectedProblem = problemCount - 1
 	}
-	m.updateViewContent()
+	if selected := m.getSelectedProblemAgent(); selected != nil {
+		m.selectedBeadID = selected.CurrentBeadID
+	}
+	m.updateViewContentLocked()
 	return m, nil
 }
 
@@ -538,13 +606,41 @@ func (m *Model) attachToSelected() (tea.Model, tea.Cmd) {
 	if agent == nil {
 		return m, nil
 	}
-	// Exit TUI and attach to tmux session
+	// Exit TUI and switch to/attach tmux session
 	m.closeOnce.Do(func() { close(m.done) })
-	c := exec.Command("tmux", "attach-session", "-t", agent.SessionID)
+	var c *exec.Cmd
+	if os.Getenv("TMUX") != "" {
+		// Inside tmux: switch the current client to the target session
+		c = exec.Command("tmux", "switch-client", "-t", agent.SessionID)
+	} else {
+		// Outside tmux: attach to the session
+		c = exec.Command("tmux", "attach-session", "-t", agent.SessionID)
+	}
 	return m, tea.Sequence(
 		tea.ExitAltScreen,
-		tea.ExecProcess(c, nil),
+		tea.ExecProcess(c, func(err error) tea.Msg {
+			return tea.Quit()
+		}),
 	)
+}
+
+// nudgeTarget returns the proper gt nudge target for an agent.
+// Uses rig/name format for polecats, rig/crew/name for crew,
+// and role shortcuts for singletons (mayor, deacon, witness, refinery).
+func nudgeTarget(agent *ProblemAgent) string {
+	switch agent.Role {
+	case "mayor", "deacon":
+		return agent.Role
+	case "witness", "refinery":
+		return agent.Rig + "/" + agent.Role
+	case "crew":
+		return agent.Rig + "/crew/" + agent.Name
+	case "polecat":
+		return agent.Rig + "/" + agent.Name
+	default:
+		// Fallback to session ID
+		return agent.SessionID
+	}
 }
 
 // nudgeSelected sends a nudge to the selected agent
@@ -553,11 +649,12 @@ func (m *Model) nudgeSelected() (tea.Model, tea.Cmd) {
 	if agent == nil {
 		return m, nil
 	}
-	// Run gt nudge in background
-	c := exec.Command("gt", "nudge", agent.Name, "continue")
+	// Run gt nudge with proper target format
+	target := nudgeTarget(agent)
+	c := exec.Command("gt", "nudge", target, "continue")
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
 		// Refresh problems after nudge
-		return problemsUpdateMsg{}
+		return problemsTickMsg{}
 	})
 }
 
@@ -567,23 +664,11 @@ func (m *Model) handoffSelected() (tea.Model, tea.Cmd) {
 	if agent == nil {
 		return m, nil
 	}
-	// Run gt nudge with handoff message
-	c := exec.Command("gt", "nudge", agent.Name, "handoff")
+	// Run gt nudge with proper target format
+	target := nudgeTarget(agent)
+	c := exec.Command("gt", "nudge", target, "handoff")
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return problemsUpdateMsg{}
-	})
-}
-
-// restartSelected restarts the selected agent
-func (m *Model) restartSelected() (tea.Model, tea.Cmd) {
-	agent := m.getSelectedProblemAgent()
-	if agent == nil {
-		return m, nil
-	}
-	// Run gt polecat restart
-	c := exec.Command("gt", "polecat", "restart", agent.Name)
-	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return problemsUpdateMsg{}
+		return problemsTickMsg{}
 	})
 }
 
@@ -602,6 +687,9 @@ func (m *Model) updateViewportSizes() {
 		helpHeight = 3
 	}
 	borderHeight := 6 // top and bottom borders for 3 panels
+	if m.viewMode == ViewProblems {
+		borderHeight = 2 // single panel
+	}
 
 	availableHeight := m.height - headerHeight - statusHeight - helpHeight - borderHeight
 	if availableHeight < 6 {

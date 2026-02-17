@@ -129,6 +129,10 @@ func (m *Model) renderProblemsPanel() string {
 func (m *Model) renderProblemsContent() string {
 	var lines []string
 
+	if m.problemsError != nil {
+		return AgentIdleStyle.Render(fmt.Sprintf("Error fetching agent status: %v\nRetrying...", m.problemsError))
+	}
+
 	if len(m.problemAgents) == 0 {
 		return AgentIdleStyle.Render("No agents detected. Run gt feed in a GasTown workspace with active agents.")
 	}
@@ -485,8 +489,8 @@ func (m *Model) renderStatusBar() string {
 			}
 		}
 		left = fmt.Sprintf("[problems] %d need attention", problemCount)
-		if m.selectedProblem >= 0 && m.selectedProblem < len(m.problemAgents) {
-			left += fmt.Sprintf(" | selected: %s", m.problemAgents[m.selectedProblem].Name)
+		if selected := m.getSelectedProblemAgent(); selected != nil {
+			left += fmt.Sprintf(" | selected: %s", selected.Name)
 		}
 	} else {
 		// Activity view: show panel and event count
