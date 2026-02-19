@@ -843,7 +843,7 @@ afterDoltMerge:
 	// on the polecat branch and refinery won't find it on main.
 	// If no branch existed (crew worker), MR bead is already on main.
 	if mrID != "" && !mergeFailed {
-		nudgeRefinery(rigName, fmt.Sprintf("MR submitted: %s branch=%s", mrID, branch))
+		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 	}
 
 	// Notify Witness about completion

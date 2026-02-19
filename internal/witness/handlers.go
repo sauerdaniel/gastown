@@ -12,7 +12,6 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
-	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -604,9 +603,10 @@ Verified: clean git state`,
 	return msg.ID, nil
 }
 
-// nudgeRefinery queues a nudge for the refinery session to check its inbox.
-// Uses the nudge queue for cooperative delivery so we don't interrupt in-flight
-// tool calls. The refinery will pick this up at its next turn boundary.
+// nudgeRefinery wakes the refinery session to check its inbox.
+// Uses idle-aware delivery: if the refinery is idle (waiting between patrol
+// cycles), delivers directly via tmux; if busy, queues for next turn boundary.
+// This ensures idle refineries wake up immediately for pending merge requests.
 func nudgeRefinery(townRoot, rigName string) error {
 	_ = session.InitRegistry(townRoot)
 	sessionName := session.RefinerySessionName(session.PrefixFor(rigName))
@@ -624,16 +624,11 @@ func nudgeRefinery(townRoot, rigName string) error {
 		return nil
 	}
 
-	// Queue the nudge for cooperative delivery at next turn boundary
-	nudgeMsg := "MERGE_READY received - check inbox for pending work"
-	if townRoot != "" {
-		return nudge.Enqueue(townRoot, sessionName, nudge.QueuedNudge{
-			Sender:  rigName + "/witness",
-			Message: nudgeMsg,
-		})
-	}
-	// Fallback to direct nudge if town root unavailable
-	return t.NudgeSession(sessionName, nudgeMsg)
+	// Immediate delivery: send directly to tmux pane.
+	// No cooperative queue — idle agents never call Drain(), so queued
+	// nudges would be stuck forever. Direct delivery is safe: if the
+	// agent is busy, text buffers in tmux and is processed at next prompt.
+	return t.NudgeSession(sessionName, "MERGE_READY received - check inbox for pending work")
 }
 
 // escalateToDeacon sends an escalation mail to the Deacon for routine operational issues.

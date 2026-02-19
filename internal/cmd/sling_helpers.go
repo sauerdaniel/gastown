@@ -16,7 +16,6 @@ import (
 	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -568,26 +567,20 @@ func wakeRigAgents(rigName string) {
 		}
 	}
 
-	// Queue nudge to witness for cooperative delivery.
-	// This avoids interrupting in-flight tool calls.
+	// Immediate delivery to witness: send directly to tmux pane.
+	// No cooperative queue — idle agents never call Drain(), so queued
+	// nudges would be stuck forever. Direct delivery is safe: if the
+	// agent is busy, text buffers in tmux and is processed at next prompt.
 	witnessSession := session.WitnessSessionName(session.PrefixFor(rigName))
-	if townRoot != "" {
-		if err := nudge.Enqueue(townRoot, witnessSession, nudge.QueuedNudge{
-			Sender:  "sling",
-			Message: "Polecat dispatched - check for work",
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to queue nudge for %s: %v\n", witnessSession, err)
-		}
-	} else {
-		// Fallback to direct nudge if town root unavailable
-		t := tmux.NewTmux()
-		_ = t.NudgeSession(witnessSession, "Polecat dispatched - check for work")
-	}
+	t := tmux.NewTmux()
+	_ = t.NudgeSession(witnessSession, "Polecat dispatched - check for work")
 }
 
-// nudgeRefinery queues a nudge for the refinery after an MR is created.
-// Uses the nudge queue for cooperative delivery so we don't interrupt
-// in-flight tool calls. The refinery picks this up at its next turn boundary.
+// nudgeRefinery wakes the refinery after an MR is created.
+// Uses immediate delivery: sends directly to the tmux pane.
+// No cooperative queue — idle agents never call Drain(), so queued
+// nudges would be stuck forever. Direct delivery is safe: if the
+// agent is busy, text buffers in tmux and is processed at next prompt.
 func nudgeRefinery(rigName, message string) {
 	refinerySession := session.RefinerySessionName(session.PrefixFor(rigName))
 
@@ -602,20 +595,8 @@ func nudgeRefinery(rigName, message string) {
 		return // Don't actually nudge tmux in tests
 	}
 
-	// Queue for cooperative delivery at refinery's next turn boundary
-	townRoot, _ := workspace.FindFromCwd()
-	if townRoot != "" {
-		if err := nudge.Enqueue(townRoot, refinerySession, nudge.QueuedNudge{
-			Sender:  "sling",
-			Message: message,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to queue nudge for %s: %v\n", refinerySession, err)
-		}
-	} else {
-		// Fallback to direct nudge if town root unavailable
-		t := tmux.NewTmux()
-		_ = t.NudgeSession(refinerySession, message)
-	}
+	t := tmux.NewTmux()
+	_ = t.NudgeSession(refinerySession, message)
 }
 
 // isPolecatTarget checks if the target string refers to a polecat.
