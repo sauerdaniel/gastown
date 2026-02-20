@@ -2265,3 +2265,102 @@ exit /b 0
 		})
 	}
 }
+// TestSlingRejectsDeferredBead verifies that gt sling refuses to sling beads
+// with deferred status or deferral keywords in their description (gt-1326mw).
+// This prevents wasting polecat slots on low-priority deferred work.
+func TestSlingRejectsDeferredBead(t *testing.T) {
+	tests := []struct {
+		name      string
+		bdOutput  string // JSON response from bd show --json
+		force     bool
+		wantError string // expected error substring, empty = no error expected
+	}{
+		{
+			name:      "deferred status is rejected",
+			bdOutput:  `[{"title":"Epic cleanup","status":"deferred","assignee":"","description":"some task"}]`,
+			wantError: "refusing to sling deferred bead",
+		},
+		{
+			name:      "deferred to post-launch in description is rejected",
+			bdOutput:  `[{"title":"Nice to have feature","status":"open","assignee":"","description":"deferred to post-launch"}]`,
+			wantError: "refusing to sling deferred bead",
+		},
+		{
+			name:      "status: deferred in description is rejected",
+			bdOutput:  `[{"title":"Low-pri work","status":"open","assignee":"","description":"status: deferred, will revisit later"}]`,
+			wantError: "refusing to sling deferred bead",
+		},
+		{
+			name:     "deferred status with --force is allowed",
+			bdOutput: `[{"title":"Re-activated work","status":"deferred","assignee":"","description":"re-activated from deferred"}]`,
+			force:    true,
+		},
+		{
+			name:     "open bead is allowed",
+			bdOutput: `[{"title":"Normal work","status":"open","assignee":"","description":"just a regular task"}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			townRoot := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+
+			binDir := filepath.Join(townRoot, "bin")
+			if err := os.MkdirAll(binDir, 0755); err != nil {
+				t.Fatalf("mkdir bin: %v", err)
+			}
+
+			// Create bd stub that returns the test bead info
+			bdScript := "#!/bin/sh\necho '" + tt.bdOutput + "'\n"
+			writeBDStub(t, binDir, bdScript, "")
+
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv(EnvGTRole, "crew")
+			t.Setenv("GT_CREW", "jv")
+			t.Setenv("GT_POLECAT", "")
+			t.Setenv("TMUX_PANE", "")
+			t.Setenv("GT_TEST_NO_NUDGE", "1")
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(cwd) })
+			if err := os.Chdir(townRoot); err != nil {
+				t.Fatalf("chdir: %v", err)
+			}
+
+			prevDryRun := slingDryRun
+			prevNoConvoy := slingNoConvoy
+			prevForce := slingForce
+			t.Cleanup(func() {
+				slingDryRun = prevDryRun
+				slingNoConvoy = prevNoConvoy
+				slingForce = prevForce
+			})
+			slingDryRun = true
+			slingNoConvoy = true
+			slingForce = tt.force
+
+			err = runSling(nil, []string{"gt-test123"})
+
+			if tt.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q but got nil", tt.wantError)
+				}
+				if !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("expected error containing %q, got: %v", tt.wantError, err)
+				}
+			} else if err != nil {
+				// Some errors are OK in dry-run (e.g., "finding town root" when workspace not fully set up).
+				// We only fail if the error is about deferred rejection, which shouldn't happen.
+				if strings.Contains(err.Error(), "refusing to sling deferred") {
+					t.Fatalf("unexpected deferred rejection: %v", err)
+				}
+			}
+		})
+	}
+}

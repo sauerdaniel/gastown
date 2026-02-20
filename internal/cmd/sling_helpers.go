@@ -78,6 +78,22 @@ type beadInfo struct {
 	Dependencies []beads.IssueDep `json:"dependencies,omitempty"`
 }
 
+// isDeferredBead checks whether a bead should be rejected from slinging because
+// it has been deferred. Returns true if the bead has status "deferred" or if its
+// description contains deferral keywords like "deferred to post-launch".
+func isDeferredBead(info *beadInfo) bool {
+	if info.Status == "deferred" {
+		return true
+	}
+	desc := strings.ToLower(info.Description)
+	if strings.Contains(desc, "deferred to post-launch") ||
+		strings.Contains(desc, "deferred to post launch") ||
+		strings.Contains(desc, "status: deferred") {
+		return true
+	}
+	return false
+}
+
 // collectExistingMolecules returns all molecule wisp IDs attached to a bead.
 // Checks both dependency bonds (ground truth from bd mol bond) and the
 // description's attached_molecule field (metadata pointer). Wisp IDs are
