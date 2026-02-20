@@ -101,6 +101,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// Flags control behavior:
 	// - sessionCleanupNeeded: set true after role detection confirms polecat
 	// - sessionKilled: set true after explicit selfKillSession succeeds
+	// - mrCreationFailed: set true when MR bead creation fails (gt-t79) — session
+	//   is preserved so the agent (or witness) can retry gt done --resume
 	//
 	// Validation errors (bad flags, wrong role) return BEFORE sessionCleanupNeeded is set,
 	// so the defer is a no-op. Operational errors (push fail, MR fail) return AFTER the
@@ -110,10 +112,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// Witness's job.
 	var sessionCleanupNeeded bool
 	var sessionKilled bool
+	var mrCreationFailed bool // gt-t79: prevents self-kill when MR creation fails
 	var deferredTownRoot string
 	var deferredRoleInfo RoleInfo
 	defer func() {
-		if sessionCleanupNeeded && !sessionKilled {
+		if sessionCleanupNeeded && !sessionKilled && !mrCreationFailed {
 			fmt.Printf("%s Deferred session cleanup (backstop)\n", style.Bold.Render("→"))
 			// Log real errors before session kill — selfKillSession terminates the
 			// tmux session (and this process's PTY), so any logging after it is
@@ -142,7 +145,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	go func() {
 		<-sigCh
 		fmt.Fprintf(os.Stderr, "\n%s Received SIGTERM — running deferred cleanup\n", style.Bold.Render("→"))
-		if sessionCleanupNeeded && !sessionKilled {
+		if sessionCleanupNeeded && !sessionKilled && !mrCreationFailed {
 			if err := selfKillSession(deferredTownRoot, deferredRoleInfo); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: SIGTERM cleanup failed: %v\n", err)
 			}
@@ -791,16 +794,27 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			}
 			if mrCreateErr != nil {
-				// All retries failed. Record error and skip to notifyWitness.
-				// Push succeeded so branch is on remote, but MR bead failed.
-				// pushFailed is set so worktree is preserved for recovery (gt-cof).
+				// HARD FAILURE (gt-t79): All retries exhausted. MR bead creation
+				// failed with push already succeeded — if we self-kill now,
+				// the work is orphaned (no MR bead means Refinery never processes it).
+				// Set mrCreationFailed to prevent both deferred and explicit self-kill.
+				mrCreationFailed = true
 				errMsg := fmt.Sprintf("MR bead creation failed after 3 attempts: %v", mrCreateErr)
 				doneErrors = append(doneErrors, errMsg)
-				// NOTE: pushFailed is reused here to mean "preserve worktree" — push
-				// actually succeeded, but the MR bead is missing so recovery needs
-				// the worktree intact. The nuke guard at self-clean checks pushFailed.
-				pushFailed = true
-				style.PrintWarning("%s\nBranch is pushed but MR bead not created. Witness will be notified.", errMsg)
+				style.PrintWarning("%s\nBranch is pushed but MR bead not created. Session preserved for retry.", errMsg)
+
+				// Write MR failure checkpoint so gt done --resume can retry (gt-t79)
+				if agentBeadID != "" {
+					cpBd := beads.New(beads.ResolveBeadsDir(cwd))
+					writeDoneCheckpoint(cpBd, agentBeadID, CheckpointMRFailed, mrCreateErr.Error())
+				}
+
+				// Emit done_mr_failed event for observability (gt-t79)
+				if logErr := events.LogFeed(events.TypeDoneMRFailed, sender,
+					events.DoneMRFailedPayload(issueID, branch, mrCreateErr.Error())); logErr != nil {
+					style.PrintWarning("could not log done_mr_failed event: %v", logErr)
+				}
+
 				goto notifyWitness
 			}
 			mrID = mrIssue.ID
@@ -969,6 +983,14 @@ afterDoltMerge:
 	// "done means gone" - both worktree and session are terminated
 	selfCleanAttempted := false
 	if roleInfo, err := GetRoleWithContext(cwd, townRoot); err == nil && roleInfo.Role == RolePolecat {
+		// gt-t79: Do NOT self-kill if MR creation failed. The session must stay
+		// alive so the agent (or witness) can retry with gt done --resume.
+		if mrCreationFailed {
+			fmt.Printf("\n%s MR creation failed — session preserved for retry (gt-t79)\n", style.Bold.Render("⚠"))
+			fmt.Printf("  Branch is pushed to origin. Retry with: gt done --resume\n")
+			fmt.Printf("  Or escalate: gt escalate \"MR creation failed\" -s HIGH\n")
+			return fmt.Errorf("MR bead creation failed — session NOT killed to prevent orphaned work (gt-t79)")
+		}
 		selfCleanAttempted = true
 
 		// Step 1: Nuke the worktree (only for COMPLETED with successful push+merge)
@@ -1071,6 +1093,7 @@ type DoneCheckpoint string
 const (
 	CheckpointPushed          DoneCheckpoint = "pushed"
 	CheckpointMRCreated       DoneCheckpoint = "mr-created"
+	CheckpointMRFailed        DoneCheckpoint = "mr-failed" // gt-t79: MR creation failed, retry on resume
 	CheckpointDoltMerged      DoneCheckpoint = "dolt-merged"
 	CheckpointWitnessNotified DoneCheckpoint = "witness-notified"
 )
