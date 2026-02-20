@@ -43,6 +43,19 @@ func TestSessionInfoJSONOutput(t *testing.T) {
 	}
 }
 
+func TestSessionStatusCmdJSONFlagWiring(t *testing.T) {
+	// Verify --json flag is registered on the session status command.
+	// This catches regressions where flag binding is accidentally removed,
+	// which would silently break formulas that depend on --json output.
+	f := sessionStatusCmd.Flags().Lookup("json")
+	if f == nil {
+		t.Fatal("session status command missing --json flag")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--json default = %q, want \"false\"", f.DefValue)
+	}
+}
+
 func TestSessionInfoJSONOutputNotRunning(t *testing.T) {
 	info := &polecat.SessionInfo{
 		Polecat:   "beta",

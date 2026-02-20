@@ -1962,23 +1962,7 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 	}
 
 	// Validate session name: must start with a known prefix and contain only safe characters
-	hasValidPrefix := false
-	// Check known rig prefixes from registry
-	for _, prefix := range session.DefaultRegistry().Prefixes() {
-		if strings.HasPrefix(sessionName, prefix+"-") {
-			hasValidPrefix = true
-			break
-		}
-	}
-	// Also accept gt- (legacy/default) and hq- (town-level)
-	if !hasValidPrefix {
-		for _, prefix := range []string{"gt-", "hq-", "gthq-"} {
-			if strings.HasPrefix(sessionName, prefix) {
-				hasValidPrefix = true
-				break
-			}
-		}
-	}
+	hasValidPrefix := session.HasKnownPrefix(sessionName)
 	if !hasValidPrefix {
 		h.sendError(w, "Invalid session name: must start with a known rig prefix", http.StatusBadRequest)
 		return

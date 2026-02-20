@@ -159,6 +159,25 @@ func BuildPrefixRegistryFromFile(path string) (*PrefixRegistry, error) {
 	return r, nil
 }
 
+// LegacyPrefixes are prefixes accepted as valid even when the registry is empty.
+// gt = default rig, bd = beads, hq = town-level HQ services, gthq = gastown HQ.
+var LegacyPrefixes = []string{"gt", "bd", "hq", "gthq"}
+
+// HasKnownPrefix returns true if s starts with a registered or legacy prefix
+// followed by "-". Use this instead of hand-rolling prefix checks so that
+// all call-sites agree on what constitutes a valid prefix.
+func HasKnownPrefix(s string) bool {
+	if defaultRegistry.HasPrefix(s) {
+		return true
+	}
+	for _, p := range LegacyPrefixes {
+		if strings.HasPrefix(s, p+"-") {
+			return true
+		}
+	}
+	return false
+}
+
 // HasPrefix returns true if the session name starts with a registered prefix followed by a dash.
 func (r *PrefixRegistry) HasPrefix(sess string) bool {
 	r.mu.RLock()

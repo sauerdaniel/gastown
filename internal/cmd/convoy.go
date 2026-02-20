@@ -34,21 +34,16 @@ func generateShortID() string {
 // looksLikeIssueID checks if a string looks like a beads issue ID.
 // Issue IDs have the format: prefix-id (e.g., gt-abc, bd-xyz, hq-123).
 func looksLikeIssueID(s string) bool {
-	// Check known prefixes from session registry
-	for _, prefix := range session.DefaultRegistry().Prefixes() {
-		if strings.HasPrefix(s, prefix+"-") {
-			return true
-		}
+	// Check registry prefixes and legacy fallbacks via centralized helper
+	if session.HasKnownPrefix(s) {
+		return true
 	}
-	// Fallback: common beads prefixes and hq- for town-level
-	for _, prefix := range []string{"gt-", "bd-", "hq-"} {
-		if strings.HasPrefix(s, prefix) {
-			return true
-		}
-	}
-	// Pattern check: 2-6 lowercase letters followed by hyphen
+	// Pattern check: 2-3 lowercase letters followed by hyphen.
+	// Covers unregistered short rig prefixes (e.g., nx, rpk).
+	// Longer prefixes (4+ chars like nrpk) are caught by HasKnownPrefix
+	// via the registry — no need to heuristic-match them here.
 	hyphenIdx := strings.Index(s, "-")
-	if hyphenIdx >= 2 && hyphenIdx <= 6 && len(s) > hyphenIdx+1 {
+	if hyphenIdx >= 2 && hyphenIdx <= 3 && len(s) > hyphenIdx+1 {
 		prefix := s[:hyphenIdx]
 		for _, c := range prefix {
 			if c < 'a' || c > 'z' {

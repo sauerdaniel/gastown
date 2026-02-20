@@ -1010,7 +1010,7 @@ func TestRunGtCommandSemaphoreTimeoutBudget(t *testing.T) {
 // accepts session names with known rig prefixes and rejects invalid prefixes.
 func TestHandleSessionPreviewPrefixValidation(t *testing.T) {
 	originalRegistry := session.DefaultRegistry()
-	defer session.SetDefaultRegistry(originalRegistry)
+	t.Cleanup(func() { session.SetDefaultRegistry(originalRegistry) })
 
 	testRegistry := session.NewPrefixRegistry()
 	testRegistry.Register("nx", "nexus")
@@ -1034,6 +1034,7 @@ func TestHandleSessionPreviewPrefixValidation(t *testing.T) {
 		{"registered prefix nx", "nx-polecat-alpha", false, ""},
 		{"registered prefix myrig", "myrig-crew-bob", false, ""},
 		{"legacy gt- prefix", "gt-polecat-test", false, ""},
+		{"legacy bd- prefix", "bd-some-bead", false, ""},
 		{"hq- prefix", "hq-nonexistent-session", false, ""},
 		{"gthq- prefix", "gthq-deacon", false, ""},
 		{"unknown prefix rejected", "unknown-session-name", true, "must start with a known rig prefix"},
